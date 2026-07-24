@@ -148,6 +148,31 @@ const MIN_FEE_STROOPS = 100;
 const MAX_FEE_STROOPS = parseInt(process.env.MAX_FEE_STROOPS || '100000');
 const STELLAR_TIMEBOUNDS_SECONDS = parseInt(process.env.STELLAR_TIMEBOUNDS_SECONDS || "60", 10);
 
+// Overall wall-clock budget for the fee-bump + retry path (issue #797):
+// submitTransactionWithFeeBump's retries and fee-doublings must never, in
+// aggregate, run past this many ms — a single submitTransaction call can
+// itself block for up to its own timeoutMs, so without an outer budget the
+// nested retry loops could keep resubmitting far past any caller's patience.
+const FEE_BUMP_BUDGET_MS = 35_000;
+
+/** Injectable clock so tests can simulate elapsed time without real sleeps. */
+export interface RetryClock {
+  now(): number;
+  sleep(ms: number): Promise<void>;
+}
+const REAL_CLOCK: RetryClock = {
+  now: () => Date.now(),
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+};
+
+/** Thrown when the fee-bump/retry budget is exhausted before a submit could start. */
+export class RetryBudgetExceededError extends Error {
+  constructor(budgetMs: number) {
+    super(`RETRY_BUDGET_EXCEEDED: no submit attempt started — ${budgetMs}ms budget exhausted`);
+    this.name = "RetryBudgetExceededError";
+  }
+}
+
 if (!AGENT_SECRET_KEY) throw new Error('AGENT_SECRET_KEY required in .env');
 
 const agentKeypair = Keypair.fromSecret(AGENT_SECRET_KEY);
@@ -199,15 +224,20 @@ export function extractX402TxHash(
 }
 
 // Helper: submitTransaction with timeout and retry
-async function submitTransactionWithRetry(
+export async function submitTransactionWithRetry(
   server: Horizon.Server,
   tx: any,
   maxRetries = 2,
   timeoutMs = 35000,
-  rebuildTx?: () => Promise<any>
+  rebuildTx?: () => Promise<any>,
+  deadlineAt?: number,
+  clock: RetryClock = REAL_CLOCK,
 ): Promise<any> {
   let lastError: any;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    if (deadlineAt !== undefined && clock.now() >= deadlineAt) {
+      throw new RetryBudgetExceededError(FEE_BUMP_BUDGET_MS);
+    }
     try {
       const result = await server.submitTransaction(tx, { timeout: timeoutMs } as any);
       return result;
@@ -219,7 +249,10 @@ async function submitTransactionWithRetry(
       // tx_bad_seq: sequence number mismatch — reload account and rebuild with 1 s backoff
       if (msg.includes("tx_bad_seq") && rebuildTx) {
         for (let seqRetry = 0; seqRetry < 3; seqRetry++) {
-          await new Promise((r) => setTimeout(r, 1000));
+          if (deadlineAt !== undefined && clock.now() >= deadlineAt) {
+            throw new RetryBudgetExceededError(FEE_BUMP_BUDGET_MS);
+          }
+          await clock.sleep(1000);
           try {
             tx = await rebuildTx();
           } catch {
@@ -230,6 +263,9 @@ async function submitTransactionWithRetry(
             { seq: tx?.sequence, attempt: seqRetry + 1, reason: "tx_bad_seq" },
             "[Stellar] tx_bad_seq — reloaded account, retrying",
           );
+          if (deadlineAt !== undefined && clock.now() >= deadlineAt) {
+            throw new RetryBudgetExceededError(FEE_BUMP_BUDGET_MS);
+          }
           try {
             const result = await server.submitTransaction(tx, { timeout: timeoutMs } as any);
             return result;
@@ -250,11 +286,14 @@ async function submitTransactionWithRetry(
       if (msg.includes("tx_bad_seq") || msg.includes("tx_too_early") || msg.includes("tx_too_late")) throw err;
       if (attempt < maxRetries) {
         const delay = Math.pow(2, attempt) * 500;
+        if (deadlineAt !== undefined && clock.now() + delay >= deadlineAt) {
+          throw new RetryBudgetExceededError(FEE_BUMP_BUDGET_MS);
+        }
         logger.warn(
           { attempt: attempt + 1, maxRetries, delay },
           '[Stellar] submitTransaction timeout, retrying',
         );
-        await new Promise((r) => setTimeout(r, delay));
+        await clock.sleep(delay);
       }
     }
   }
@@ -263,18 +302,23 @@ async function submitTransactionWithRetry(
 
 // Helper: submit transaction with automatic fee bump on insufficient_fee error.
 // Wraps retries in fee-bump envelopes, doubling the fee each time (up to 3x max).
-async function submitTransactionWithFeeBump(
+export async function submitTransactionWithFeeBump(
   server: Horizon.Server,
   account: any,
   operations: any[],
   signer: Keypair,
   initialFee?: string,
+  clock: RetryClock = REAL_CLOCK,
 ): Promise<{ hash: string; fee: string }> {
   let currentFee = initialFee || await getRecommendedFee();
   let attempt = 0;
   const maxAttempts = 3; // up to 3 fee bumps
+  const deadlineAt = clock.now() + FEE_BUMP_BUDGET_MS;
 
   while (attempt < maxAttempts) {
+    if (clock.now() >= deadlineAt) {
+      throw new RetryBudgetExceededError(FEE_BUMP_BUDGET_MS);
+    }
     try {
       const tx = new TransactionBuilder(account, {
         fee: currentFee,
@@ -300,11 +344,16 @@ async function submitTransactionWithFeeBump(
         const rebuilt = newTx.setTimeout(30).build();
         rebuilt.sign(signer);
         return rebuilt;
-      });
+      }, deadlineAt, clock);
       return { hash: result.hash, fee: currentFee };
     } catch (err: any) {
+      if (err instanceof RetryBudgetExceededError) throw err;
       const resultCodes = err?.response?.data?.extras?.result_codes;
       const isFeeError = resultCodes?.transaction === 'tx_insufficient_fee';
+
+      if (isFeeError && clock.now() >= deadlineAt) {
+        throw new RetryBudgetExceededError(FEE_BUMP_BUDGET_MS);
+      }
 
       if (isFeeError && attempt < maxAttempts - 1) {
         // Double the fee and wrap in a fee-bump envelope
@@ -337,7 +386,9 @@ async function submitTransactionWithFeeBump(
         );
         feeBumpTx.sign(signer);
 
-        const result = await submitTransactionWithRetry(server, feeBumpTx as any);
+        const result = await submitTransactionWithRetry(
+          server, feeBumpTx as any, 2, 35000, undefined, deadlineAt, clock,
+        );
         return { hash: result.hash, fee: currentFee };
       }
 
