@@ -54,6 +54,11 @@ window before the SLO is breached.
 Alert rule definitions live alongside the Prometheus config in `docker/prometheus/`;
 this doc is the source of truth for the *targets* those rules should enforce.
 
+Pre-aggregated series for these SLIs (success/error ratios at 5m/1h/6h/3d windows,
+so dashboards and alerts don't recompute the raw counters on every query) are defined
+in [`docker/prometheus/recording-rules.yml`](../../docker/prometheus/recording-rules.yml),
+following the `careguard:<sli>:<kind>_rate<window>` naming convention.
+
 ## Retention
 
 Error-budget history needs to persist at least as long as the longest SLO window above

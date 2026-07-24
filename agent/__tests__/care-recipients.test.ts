@@ -40,7 +40,7 @@ describe("CareRecipientsStore", () => {
       insurance: "Medicare",
       caregiver_user_id: null,
     });
-    expect(created.id).toMatch(/^john_doe_\d+$/);
+    expect(created.id).toMatch(/^john_doe_\d+_[0-9a-f]{8}$/);
     expect(created.name).toBe("John Doe");
     expect(created.medications).toEqual(["Aspirin"]);
 

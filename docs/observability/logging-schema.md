@@ -167,4 +167,5 @@ See [docs/SECURITY.md](../SECURITY.md) for details on log tampering detection an
 ## Related
 
 - [Grafana dashboard guide](./dashboard-guide.md) — metrics and panels
+- [Correlation and trace-ID guide](./correlation-ids.md) — how requestId/agentRunId propagate and how to trace one agent run end-to-end
 - [Correlation ID design](../adr/002-pii-in-persistence.md) — PII and request tracing decisions

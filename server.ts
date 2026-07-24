@@ -76,7 +76,7 @@ import { resolveRequestedDosage } from "./services/pharmacy-api/dosage.ts";
 import { createPharmacyPricingStore } from "./services/pharmacy-api/db.ts";
 import { PRICING_DATABASE, getAvailableDrugs } from "./shared/pharmacy-pricing.ts";
 import { createCareRecipientsStore } from "./services/care-recipients/db.ts";
-import type { CareRecipient } from "./services/care-recipients/db.ts";
+import { createCareRecipientsRouter } from "./services/care-recipients/routes.ts";
 import {
   buildCompareResponse,
   DrugRecordSchema,
@@ -211,47 +211,6 @@ let _profileData = {
 // --- Express App ---
 const app: Express = express();
 let isDraining = false;
-
-function parseCookies(cookieHeader: string | undefined): Record<string, string> {
-  const list: Record<string, string> = {};
-  if (!cookieHeader) return list;
-  cookieHeader.split(";").forEach((cookie) => {
-    const parts = cookie.split("=");
-    list[parts.shift()!.trim()] = decodeURIComponent(parts.join("="));
-  });
-  return list;
-}
-
-function requireCaregiverToken(req: express.Request, res: express.Response, next: express.NextFunction) {
-  const auth = req.headers.authorization;
-  let token: string | undefined;
-
-  if (auth?.startsWith("Bearer ")) {
-    token = auth.slice("Bearer ".length);
-  } else {
-    const cookies = parseCookies(req.headers.cookie);
-    token = cookies["caregiver_token"];
-    
-    if (token) {
-      const csrfHeader = req.headers["x-csrf-token"];
-      const csrfCookie = cookies["csrf_token"];
-      if (!csrfHeader || !csrfCookie || csrfHeader !== csrfCookie) {
-        res.status(403).json({ error: "CSRF token mismatch or missing" });
-        return;
-      }
-    }
-  }
-
-  if (!token) {
-    res.status(401).setHeader("WWW-Authenticate", "Bearer").json({ error: "Missing caregiver token" });
-    return;
-  }
-  if (token !== CAREGIVER_TOKEN) {
-    res.status(403).json({ error: "Invalid caregiver token" });
-    return;
-  }
-  next();
-}
 
 app.use("/agent", rateLimiters.agent);
 app.use("/health", rateLimiters.health);
@@ -984,26 +943,7 @@ app.post("/pharmacy/order", perRouteLimiters.pharmacyOrder, concurrentRequestsMi
 // CARE RECIPIENTS API
 // ============================================================
 
-app.get("/recipients", requireCaregiverToken, (_req, res) => {
-  res.json(recipientsStore.list());
-});
-
-app.post("/recipients", requireCaregiverToken, (req, res) => {
-  const body = req.body as Partial<CareRecipient>;
-  if (!body?.name || typeof body.name !== 'string' || !body.name.trim()) {
-    res.status(400).json({ error: 'name is required' });
-    return;
-  }
-  const created = recipientsStore.create({
-    name: body.name.trim(),
-    age: typeof body.age === 'number' ? body.age : null,
-    medications: Array.isArray(body.medications) ? body.medications : [],
-    primary_doctor: typeof body.primary_doctor === 'string' ? body.primary_doctor : null,
-    insurance: typeof body.insurance === 'string' ? body.insurance : null,
-    caregiver_user_id: null,
-  });
-  res.status(201).json(created);
-});
+app.use(createCareRecipientsRouter(recipientsStore, CAREGIVER_TOKEN));
 
 // ============================================================
 // AI AGENT

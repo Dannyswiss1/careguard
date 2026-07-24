@@ -161,6 +161,8 @@ Health checks are enabled on every service. Targets:
 
 Boot time on a warm Docker is ~30s (cold first build is much longer due to npm install). If the dashboard waits forever for `server: healthy`, check `docker compose logs server` — the most common cause is missing/invalid `OZ_FACILITATOR_API_KEY` or `AGENT_SECRET_KEY` in `.env`.
 
+See [docs/observability/health-checks.md](docs/observability/health-checks.md) for the `/health` and `/ready` response schemas and what each dependency check means.
+
 ---
 
 ## Running Tests
