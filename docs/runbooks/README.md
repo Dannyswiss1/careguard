@@ -55,5 +55,6 @@ Permanent fix.
 
 - `docs/adr/` — architectural decision records
 - `docs/security/` — security policies and threat model
+- [`docs/observability/sentry.md`](../observability/sentry.md) — Sentry setup, redaction, and the escalation path that feeds into these runbooks
 - `CONTRIBUTING.md` — how to add a new runbook
 - `README.md` — project overview

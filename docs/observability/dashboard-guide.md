@@ -192,4 +192,5 @@ To add a new dashboard:
 
 - [Metrics catalog](./metrics-catalog.md) — every exported metric, its labels, and which panel/alert uses it
 - [SLOs and error budgets](./slo.md) — targets derived from these metrics
+- [Sentry setup and escalation](./sentry.md) — error-tracking config, redaction, and on-call path
 - [Prometheus retention and remote-write strategy](./prometheus-retention.md) — how long this data lives
