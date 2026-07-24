@@ -27,7 +27,68 @@ components:
           type: 'string'
         details:
           type: 'object'
+    ReadinessResponse:
+      type: 'object'
+      description: 'See docs/observability/health-checks.md for the full schema and check semantics.'
+      properties:
+        status:
+          type: 'string'
+          enum:
+            - 'ok'
+            - 'degraded'
+        checks:
+          type: 'object'
+          properties:
+            env:
+              oneOf:
+                - type: 'boolean'
+                - type: 'string'
+            horizon:
+              type: 'boolean'
+            ozFacilitator:
+              oneOf:
+                - type: 'boolean'
+                - type: 'string'
 paths:
+  /health:
+    get:
+      summary: 'Liveness probe — always fast, no dependency checks'
+      tags:
+        - 'Observability'
+      security:
+[]
+      responses:
+        200:
+          description: 'Process is up'
+          content:
+            application/json:
+              schema:
+                type: 'object'
+                properties:
+                  status:
+                    type: 'string'
+                    enum:
+                      - 'ok'
+  /ready:
+    get:
+      summary: 'Readiness probe — checks required env, Horizon, and OZ facilitator status'
+      tags:
+        - 'Observability'
+      security:
+[]
+      responses:
+        200:
+          description: 'All dependency checks passed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessResponse'
+        503:
+          description: 'Draining, or at least one dependency check failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessResponse'
   /agent/spending:
     get:
       summary: 'Get agent spending summary'
