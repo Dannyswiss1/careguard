@@ -187,3 +187,9 @@ To add a new dashboard:
 3. The dashboard appears automatically in the Grafana UI
 
 > **Note:** The datasource UID must match the Prometheus datasource configured in `docker/grafana/provisioning/datasources/prometheus.yml`. Current UID: `prometheus`.
+
+## Related docs
+
+- [Metrics catalog](./metrics-catalog.md) — every exported metric, its labels, and which panel/alert uses it
+- [SLOs and error budgets](./slo.md) — targets derived from these metrics
+- [Prometheus retention and remote-write strategy](./prometheus-retention.md) — how long this data lives
