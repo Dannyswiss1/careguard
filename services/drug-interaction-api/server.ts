@@ -31,7 +31,7 @@ const PAY_TO = process.env.PHARMACY_2_PUBLIC_KEY;
 
 if (!PAY_TO) throw new Error("PHARMACY_2_PUBLIC_KEY required in .env");
 
-const app = express();
+export const app = express();
 applySecurityMiddleware(app);
 app.use(createCorsMiddleware());
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT ?? "20kb" }));
@@ -87,7 +87,7 @@ app.get("/ready", (_req, res) => {
   res.send("OK");
 });
 
-const server = app.listen(PORT, () => {
+export const server = app.listen(PORT, () => {
   logger.info({ port: PORT, network: NETWORK, facilitator: OZ_FACILITATOR_URL, payTo: PAY_TO }, "Drug Interaction API started");
 });
 

@@ -88,10 +88,10 @@ export const DrugInteractionsQuerySchema = z
     meds: delimitedFreeTextListSchema("meds"),
   })
   .strict()
-  .refine(
-    ({ meds }) => meds.length >= 2,
-    "Need at least 2 medications",
-  )
+  // A single medication can't have a pairwise interaction, but that's not
+  // malformed input — checkInteractions() already returns an empty
+  // interactions array for a length-1 list, so let it through rather than
+  // erroring.
   .transform(({ meds }) => ({ medications: meds }));
 
 export type DrugInteractionsQuery = z.infer<typeof DrugInteractionsQuerySchema>;

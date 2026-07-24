@@ -37,7 +37,7 @@ if (!RECIPIENT) throw new Error("PHARMACY_1_PUBLIC_KEY required in .env");
 if (!MPP_SECRET_KEY) throw new Error("MPP_SECRET_KEY required in .env");
 
 // Order storage (persisted to file)
-import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, accessSync, constants as fsConstants } from "fs";
 import lock from "proper-lockfile";
 
 const DATA_DIR = process.env.DATA_DIR || new URL("../../data", import.meta.url).pathname;
@@ -105,7 +105,7 @@ async function saveOrder(order: any) {
   }
 }
 
-const app = express();
+export const app = express();
 applySecurityMiddleware(app);
 app.use(createCorsMiddleware());
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT ?? "20kb" }));
@@ -155,10 +155,14 @@ app.post("/pharmacy/order", async (req, res) => {
   const safeDrug = sanitizeUserString(order.drug);
   const safePharmacy = sanitizeUserString(order.pharmacy);
 
-  // Convert Express request to Web Request for mppx
+  // Convert Express request to Web Request for mppx. Never forward the
+  // caller's own auth/session headers into the upstream MPP charge call —
+  // mppx only needs the payment-protocol headers (e.g. X-Payment).
+  const FORWARD_HEADER_BLOCKLIST = new Set(["authorization", "cookie"]);
   const headers = new Headers();
   for (const [key, value] of Object.entries(req.headers)) {
     if (value == null) continue;
+    if (FORWARD_HEADER_BLOCKLIST.has(key.toLowerCase())) continue;
     if (Array.isArray(value)) {
       for (const entry of value) headers.append(key, entry);
     } else {
@@ -172,10 +176,17 @@ app.post("/pharmacy/order", async (req, res) => {
   });
 
   // Run MPP charge flow
-  const result = await mppx.charge({
-    amount: Number(order.amount).toFixed(2),
-    description: `Medication: ${safeDrug} from ${safePharmacy}`,
-  })(webReq);
+  let result;
+  try {
+    result = await mppx.charge({
+      amount: Number(order.amount).toFixed(2),
+      description: `Medication: ${safeDrug} from ${safePharmacy}`,
+    })(webReq);
+  } catch (err: any) {
+    logger.error({ err: err?.message }, "MPP charge flow failed — facilitator unavailable");
+    res.status(503).json({ error: "Payment facilitator unavailable, try again shortly" });
+    return;
+  }
 
   // 402 = client needs to sign and pay
   if (result.status === 402) {
@@ -226,10 +237,16 @@ app.get("/ready", (_req, res) => {
     res.status(503).send("Service Unavailable");
     return;
   }
+  try {
+    accessSync(DATA_DIR, fsConstants.W_OK);
+  } catch {
+    res.status(503).json({ error: "Order store is not writable" });
+    return;
+  }
   res.send("OK");
 });
 
-const server = app.listen(PORT, () => {
+export const server = app.listen(PORT, () => {
   logger.info({ port: PORT, network: NETWORK, recipient: RECIPIENT, currency: USDC_SAC_TESTNET }, "Pharmacy Payment Service (MPP Charge) started");
 });
 

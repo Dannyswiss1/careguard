@@ -25,6 +25,7 @@
     "test:watch": "vitest",
     "e2e": "cd dashboard && npx playwright test --config ../e2e/playwright.config.ts",
     "load": "k6 run load/agent-run.js",
+    "load:bill-audit": "k6 run load/bill-audit.js",
     "check:env-vars": "tsx scripts/check-env-vars.ts"
   },
   "keywords": [],
