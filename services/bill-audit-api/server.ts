@@ -45,20 +45,23 @@ interface DuplicateAllowlistEntry {
 
 let duplicateAllowlist: Set<string> = new Set();
 let allowlistMetadata: Map<string, DuplicateAllowlistEntry> = new Map();
+let allowlistLoaded = false;
 
 function loadDuplicateAllowlist() {
   try {
     const allowlistPath = new URL('./duplicates-allowlist.json', import.meta.url).pathname;
     const data = JSON.parse(readFileSync(allowlistPath, 'utf-8')) as DuplicateAllowlistEntry[];
-    
+
     duplicateAllowlist = new Set(data.map(entry => entry.code));
     allowlistMetadata = new Map(data.map(entry => [entry.code, entry]));
-    
+    allowlistLoaded = true;
+
     logger.info({ count: duplicateAllowlist.size, codes: Array.from(duplicateAllowlist) }, 'Loaded duplicate detection allowlist');
   } catch (err: any) {
     logger.error({ err: err.message }, 'Failed to load duplicates-allowlist.json, using empty allowlist');
     duplicateAllowlist = new Set();
     allowlistMetadata = new Map();
+    allowlistLoaded = false;
   }
 }
 
@@ -93,6 +96,7 @@ interface AuditThresholdConfig {
 }
 
 let auditThresholds: AuditThresholdConfig = { default: BILL_AUDIT_OVERCHARGE_MULTIPLIER, byCpt: {} };
+let thresholdsLoaded = false;
 
 function loadAuditThresholds() {
   try {
@@ -101,10 +105,12 @@ function loadAuditThresholds() {
     if (process.env.BILL_AUDIT_OVERCHARGE_MULTIPLIER) {
       auditThresholds.default = BILL_AUDIT_OVERCHARGE_MULTIPLIER;
     }
+    thresholdsLoaded = true;
     logger.info({ default: auditThresholds.default, cptCount: Object.keys(auditThresholds.byCpt).length }, 'Loaded audit thresholds configuration');
   } catch (err: any) {
     logger.error({ err: err.message }, `Failed to load audit_thresholds.json, using default threshold of ${BILL_AUDIT_OVERCHARGE_MULTIPLIER}`);
     auditThresholds = { default: BILL_AUDIT_OVERCHARGE_MULTIPLIER, byCpt: {} };
+    thresholdsLoaded = false;
   }
 }
 
@@ -206,7 +212,7 @@ export function auditBill(lineItems: BillItem[]) {
   };
 }
 
-const app = express();
+export const app = express();
 applySecurityMiddleware(app);
 app.use(createCorsMiddleware());
 app.use(express.json({ limit: process.env.BILL_AUDIT_BODY_LIMIT ?? "256kb" }));
@@ -299,10 +305,17 @@ app.get("/ready", (_req, res) => {
     res.status(503).send("Service Unavailable");
     return;
   }
+  if (!thresholdsLoaded || !allowlistLoaded) {
+    res.status(503).json({
+      status: "degraded",
+      checks: { thresholdsLoaded, allowlistLoaded },
+    });
+    return;
+  }
   res.send("OK");
 });
 
-const server = app.listen(PORT, () => {
+export const server = app.listen(PORT, () => {
   logger.info({ port: PORT, network: NETWORK, facilitator: OZ_FACILITATOR_URL, payTo: PAY_TO }, "Bill Audit API started");
 });
 
