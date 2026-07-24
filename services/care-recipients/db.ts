@@ -1,5 +1,6 @@
 import { mkdirSync } from 'fs';
 import { createRequire } from 'module';
+import { randomUUID } from 'crypto';
 import path from 'path';
 import { logger } from '../../shared/logger.ts';
 
@@ -117,8 +118,11 @@ export class CareRecipientsStore {
   }
 
   create(input: Omit<CareRecipient, 'id'>): CareRecipient {
+    // Date.now() alone collides under concurrent creates of the same name within
+    // the same millisecond (duplicate PRIMARY KEY -> insert throws); a short
+    // random suffix keeps ids readable while guaranteeing uniqueness.
     const base = input.name.toLowerCase().replace(/\s+/g, '_');
-    const id = `${base}_${Date.now()}`;
+    const id = `${base}_${Date.now()}_${randomUUID().slice(0, 8)}`;
     this.db.prepare(`
       INSERT INTO care_recipients (id, name, age, medications, primary_doctor, insurance, caregiver_user_id)
       VALUES (?, ?, ?, ?, ?, ?, ?)
