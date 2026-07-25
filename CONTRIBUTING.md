@@ -85,6 +85,15 @@ The [dependabot-automerge workflow](.github/workflows/dependabot-automerge.yml) 
 - ESLint + Prettier (run `npm run lint` before pushing)
 - Keep services self-contained; shared code goes in `shared/`
 
+## Observability
+
+When adding or modifying metrics, follow the conventions in
+[`docs/observability/metrics-naming.md`](docs/observability/metrics-naming.md).
+This document covers naming conventions (prefixes, `_total` suffix, base-unit
+policy), label-cardinality rules, and includes a checklist for new metrics.
+Every new metric must also be added to
+[`docs/observability/metrics-catalog.md`](docs/observability/metrics-catalog.md).
+
 ## Smart Contract Guidelines (Stellar/Soroban)
 
 If contributing to on-chain components:
