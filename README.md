@@ -255,6 +255,19 @@ careguard/
 
 ---
 
+## Ops and Reliability
+
+| Doc | What it covers |
+|-----|---------------|
+| [docs/sla.md](docs/sla.md) | Availability targets, downtime definitions, dependency caveats, and maintenance-window policy |
+| [docs/release/production-readiness.md](docs/release/production-readiness.md) | Go-live checklist: security gates, observability, testnet → mainnet cutover, and payment config verification |
+| [docs/release/compatibility-matrix.md](docs/release/compatibility-matrix.md) | Node, SDK, and API contract version requirements per release |
+| [docs/observability/slo.md](docs/observability/slo.md) | SLO targets, error budgets, and alert mappings |
+| [docs/observability/health-checks.md](docs/observability/health-checks.md) | `/health` and `/ready` response schemas |
+| [docs/runbooks/README.md](docs/runbooks/README.md) | Operational runbooks for outages and incidents |
+
+---
+
 ## Why CareGuard
 
 ### Application of Technology
