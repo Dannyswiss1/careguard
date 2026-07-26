@@ -26,7 +26,7 @@ import { pharmacyUnknownDrugTotal } from "../../shared/metrics.ts";
 import type { PharmacyPricingStore } from "./db.ts";
 import { createPharmacyPricingStore } from "./db.ts";
 import { resolveRequestedDosage } from "./dosage.ts";
-import { PRICING_DATABASE, getAvailableDrugs } from "../../shared/pharmacy-pricing.ts";
+import { PRICING_DATABASE, getPharmacyPrices, getAvailableDrugs } from "../../shared/pharmacy-pricing.ts";
 import {
   buildCompareResponse,
   DrugRecordSchema,
@@ -272,17 +272,14 @@ export function createPharmacyApp(options: PharmacyAppOptions) {
     const dosage = resolveRequestedDosage(drug, query.dosage);
 
     try {
-      const prices = pricingStore.getPrices(drug);
-      if (prices.length === 0) {
-        pharmacyUnknownDrugTotal.inc({ drug });
-        res.status(404).json({ ok: false, reason: "NO_PRICES_FOUND" });
-        return;
-      }
+      const { prices, usedZipCode, isFallbackZip } = getPharmacyPrices(drug, query.zip);
       res.json(
         buildCompareResponse({
           drug,
           dosage,
           zip: query.zip,
+          usedZipCode,
+          isFallbackZip,
           payTo: options.payTo,
           network: NETWORK,
           prices,

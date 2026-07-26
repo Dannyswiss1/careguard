@@ -6,7 +6,7 @@
  */
 
 import { logger } from "./logger.ts";
-import { PRICING_DATABASE, type PharmacyPrice } from "./pharmacy-pricing.ts";
+import { PRICING_DATABASE, getPharmacyPrices, type PharmacyPrice } from "./pharmacy-pricing.ts";
 
 export interface PricingProvider {
   name: string;
@@ -67,16 +67,9 @@ export class StaticProvider extends BasePricingProvider {
   
   private static readonly PRICING_DATABASE = PRICING_DATABASE;
 
-
-  async getPrices(drugName: string, _zipCode?: string): Promise<PharmacyPrice[]> {
-    const normalized = drugName.toLowerCase();
-    const prices = StaticProvider.PRICING_DATABASE[normalized];
-    
-    if (!prices) {
-      throw new Error(`Drug not found: ${drugName}`);
-    }
-    
-    return prices;
+  async getPrices(drugName: string, zipCode?: string): Promise<PharmacyPrice[]> {
+    const res = getPharmacyPrices(drugName, zipCode);
+    return res.prices;
   }
 
   async getDrugCount(): Promise<number> {

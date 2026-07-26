@@ -74,7 +74,7 @@ import {
 import { executeTool, runAgent } from "./agent/runner.ts";
 import { resolveRequestedDosage } from "./services/pharmacy-api/dosage.ts";
 import { createPharmacyPricingStore } from "./services/pharmacy-api/db.ts";
-import { PRICING_DATABASE, getAvailableDrugs } from "./shared/pharmacy-pricing.ts";
+import { PRICING_DATABASE, getPharmacyPrices, getAvailableDrugs } from "./shared/pharmacy-pricing.ts";
 import { createCareRecipientsStore } from "./services/care-recipients/db.ts";
 import { createCareRecipientsRouter } from "./services/care-recipients/routes.ts";
 import {
@@ -515,17 +515,14 @@ app.get("/pharmacy/compare", perRouteLimiters.pharmacyCompare, concurrentRequest
   const dosage = resolveRequestedDosage(drug, query.dosage);
 
   try {
-    const prices = pharmacyStore.getPrices(drug);
-    if (prices.length === 0) {
-      pharmacyUnknownDrugTotal.inc({ drug });
-      res.status(404).json({ ok: false, reason: "NO_PRICES_FOUND" });
-      return;
-    }
+    const { prices, usedZipCode, isFallbackZip } = getPharmacyPrices(drug, query.zip);
     res.json(
       buildCompareResponse({
         drug,
         dosage,
         zip: query.zip,
+        usedZipCode,
+        isFallbackZip,
         payTo: env.data.PHARMACY_1_PUBLIC_KEY,
         network: NETWORK,
         prices,

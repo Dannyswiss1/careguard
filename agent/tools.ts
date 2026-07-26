@@ -1195,6 +1195,8 @@ export async function comparePharmacyPrices(
       drug: drugName,
       dosage,
       zipCode,
+      usedZipCode: zipCode === '10001' || zipCode === '33101' ? zipCode : '90210',
+      isFallbackZip: zipCode !== '90210' && zipCode !== '10001' && zipCode !== '33101',
       protocol: {
         name: 'x402',
         mockNetwork: true,
