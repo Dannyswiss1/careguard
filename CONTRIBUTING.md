@@ -73,6 +73,15 @@ The [dependabot-automerge workflow](.github/workflows/dependabot-automerge.yml) 
 - Auto-squash-merges patch and minor updates
 - Adds a comment and labels on major updates, blocking auto-merge
 
+## Release Process
+
+For information on versioning, deprecations, hotfixes, and rollbacks, see:
+
+- [Versioning Guidelines](docs/release/versioning.md) — SemVer rules for breaking/minor/patch releases
+- [Deprecation Policy](docs/release/deprecation-policy.md) — How to safely deprecate APIs and env vars
+- [Hotfix Process](docs/release/hotfix-process.md) — Emergency patch release workflow
+- [Rollback Procedure](docs/release/rollback.md) — How to revert a bad release
+
 ## Security
 
 - Never commit secrets or `.env` files — they are gitignored

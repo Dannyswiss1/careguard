@@ -228,6 +228,8 @@ From real end-to-end test on Stellar testnet:
 
 **Cost breakdown:** 10 price queries @ $0.002 = $0.02, 1 drug interaction check @ $0.001 = $0.001, 1 bill audit @ $0.01 = $0.01. Total: $0.030 in autonomous AI agent operational costs.
 
+For detailed cost analysis, per-operation breakdown, and cost estimation worksheets, see [Cost Estimation Guide](docs/cost-estimation.md).
+
 ---
 
 ## Project Structure
