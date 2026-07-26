@@ -1,5 +1,6 @@
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import { toast } from "sonner";
 import type { BillAuditResult, DrugInteractionResult, PharmacyCompareResult, SpendingData, Transaction, DisputeLetter } from "../lib/types";
 import { DEFAULT_PDF_THEME, type PdfTheme } from "../lib/pdf-theme";
 import type { RecipientProfile } from "../lib/types";
@@ -85,7 +86,14 @@ export function downloadBillAuditPDF(
     ? `Patient: ${recipientLabel} | Facility: ${recipient.facility || "N/A"} | ${filteredItems.length} of ${allItems.length} items shown — errors only`
     : `Patient: ${recipientLabel} | Facility: ${recipient.facility || "N/A"}`;
 
-  const doc: AutoTableDoc = new jsPDF();
+  const requestId = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+  let doc: AutoTableDoc;
+  try {
+    doc = new jsPDF();
+  } catch (err) {
+    toast.error(`Couldn't generate PDF — try again (Req ID: ${requestId})`);
+    return;
+  }
   doc.setProperties({
     title: "CareGuard Medical Bill Audit Report",
     subject: `Bill audit for ${recipient.name}`,
@@ -175,7 +183,11 @@ export function downloadBillAuditPDF(
   }
 
   addFooter(doc);
-  doc.save("careguard-bill-audit-report.pdf");
+  try {
+    doc.save("careguard-bill-audit-report.pdf");
+  } catch (err) {
+    toast.error(`Couldn't generate PDF — try again (Req ID: ${requestId})`);
+  }
 }
 
 export function downloadMedicationPDF(
@@ -188,7 +200,14 @@ export function downloadMedicationPDF(
     age: 78,
     facility: "General Hospital",
   };
-  const doc: AutoTableDoc = new jsPDF();
+  const requestId = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+  let doc: AutoTableDoc;
+  try {
+    doc = new jsPDF();
+  } catch (err) {
+    toast.error(`Couldn't generate PDF — try again (Req ID: ${requestId})`);
+    return;
+  }
   doc.setProperties({
     title: "CareGuard Medication Price Comparison Report",
     subject: `Medication comparison for ${recipient.name}`,
@@ -263,7 +282,11 @@ export function downloadMedicationPDF(
   }
 
   addFooter(doc);
-  doc.save("careguard-medication-report.pdf");
+  try {
+    doc.save("careguard-medication-report.pdf");
+  } catch (err) {
+    toast.error(`Couldn't generate PDF — try again (Req ID: ${requestId})`);
+  }
 }
 
 export function downloadTransactionPDF(
@@ -277,7 +300,14 @@ export function downloadTransactionPDF(
     age: 78,
     facility: "General Hospital",
   };
-  const doc: AutoTableDoc = new jsPDF();
+  const requestId = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+  let doc: AutoTableDoc;
+  try {
+    doc = new jsPDF();
+  } catch (err) {
+    toast.error(`Couldn't generate PDF — try again (Req ID: ${requestId})`);
+    return;
+  }
   doc.setProperties({
     title: "CareGuard Transaction Report",
     subject: `Transactions for ${recipient.name}`,
@@ -328,7 +358,11 @@ export function downloadTransactionPDF(
   });
 
   addFooter(doc);
-  doc.save("careguard-transaction-report.pdf");
+  try {
+    doc.save("careguard-transaction-report.pdf");
+  } catch (err) {
+    toast.error(`Couldn't generate PDF — try again (Req ID: ${requestId})`);
+  }
 }
 
 export function downloadDisputeLetterPDF(
@@ -336,7 +370,14 @@ export function downloadDisputeLetterPDF(
   options?: { theme?: PdfTheme }
 ) {
   const theme = options?.theme ?? DEFAULT_PDF_THEME;
-  const doc = new jsPDF();
+  const requestId = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+  let doc: jsPDF;
+  try {
+    doc = new jsPDF();
+  } catch (err) {
+    toast.error(`Couldn't generate PDF — try again (Req ID: ${requestId})`);
+    return;
+  }
   doc.setProperties({
     title: `CareGuard Dispute Letter — ${letter.recipientName}`,
     subject: `Bill dispute for ${letter.recipientName}`,
@@ -368,7 +409,11 @@ export function downloadDisputeLetterPDF(
   }
 
   addFooter(doc);
-  doc.save(`careguard-dispute-letter-${letter.billId}.pdf`);
+  try {
+    doc.save(`careguard-dispute-letter-${letter.billId}.pdf`);
+  } catch (err) {
+    toast.error(`Couldn't generate PDF — try again (Req ID: ${requestId})`);
+  }
 }
 
 export function downloadDisputeLetterEmail(letter: DisputeLetter): string {
