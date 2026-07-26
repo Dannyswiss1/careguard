@@ -2,6 +2,7 @@
 
 import { useState, useMemo } from "react";
 import { downloadTransactionPDF } from "../../app/pdf";
+import { copyText } from "../../lib/clipboard";
 import type { RecipientProfile } from "../../lib/types";
 import { ConfirmDialog } from "../primitives/confirm-dialog";
 import { TxLink } from "../primitives/tx-link";
@@ -163,14 +164,14 @@ export function ActivityTab({
                             {entry.errorDetail}
                           </pre>
                           <button
-                            onClick={() => {
-                              navigator.clipboard.writeText(entry.errorDetail!)
-                                .then(() => {
-                                  const btn = document.activeElement as HTMLElement;
-                                  const orig = btn?.textContent;
-                                  if (btn) { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = orig; }, 1500); }
-                                })
-                                .catch(() => {});
+                            onClick={async () => {
+                              if (!entry.errorDetail) return;
+                              const result = await copyText(entry.errorDetail);
+                              if (result === "ok" || result === "fallback") {
+                                const btn = document.activeElement as HTMLElement;
+                                const orig = btn?.textContent;
+                                if (btn) { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = orig; }, 1500); }
+                              }
                             }}
                             className="text-[10px] text-sky-400 hover:text-sky-300 underline"
                           >
