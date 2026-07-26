@@ -29,6 +29,8 @@ import { requireApiKey } from "./shared/auth.ts";
 import { validateTask, getSuspiciousTaskCount } from "./shared/task-validation.ts";
 import {
   BillAuditValidationError,
+  FAIR_MARKET_RATES,
+  auditBill,
   validateBillAuditRequest,
 } from "./shared/bill-audit.ts";
 import { sanitizeUserString } from "./shared/sanitize.ts";
@@ -567,102 +569,6 @@ app.get("/pharmacy/compare", perRouteLimiters.pharmacyCompare, concurrentRequest
 // BILL AUDIT API (was port 3002)
 // ============================================================
 
-const FAIR_MARKET_RATES: Record<
-  string,
-  { description: string; fairRate: number }
-> = {
-  "99213": { description: "Office visit, moderate", fairRate: 130 },
-  "99214": { description: "Office visit, high", fairRate: 195 },
-  "99215": { description: "Office visit, complex", fairRate: 265 },
-  "70553": { description: "MRI brain", fairRate: 450 },
-  "71046": { description: "Chest X-ray", fairRate: 45 },
-  "80053": { description: "Metabolic panel", fairRate: 25 },
-  "85025": { description: "CBC", fairRate: 15 },
-  "36415": { description: "Venipuncture", fairRate: 10 },
-  "93000": { description: "ECG", fairRate: 35 },
-  "99232": { description: "Hospital care, moderate", fairRate: 145 },
-  "99233": { description: "Hospital care, high", fairRate: 210 },
-  "99238": { description: "Discharge day", fairRate: 160 },
-  "96372": { description: "Injection", fairRate: 25 },
-  J0170: { description: "Epinephrine", fairRate: 15 },
-  "97110": { description: "Physical therapy", fairRate: 55 },
-};
-
-function runBillAudit(lineItems: any[]) {
-  const results: any[] = [];
-  let totalCharged = 0,
-    totalCorrect = 0,
-    errorCount = 0;
-  const seenCodes: Record<string, number> = {};
-  for (const item of lineItems) {
-    totalCharged += item.chargedAmount;
-    const fair = FAIR_MARKET_RATES[item.cptCode];
-    const fairAmt = fair !== undefined ? fair.fairRate * item.quantity : null;
-    seenCodes[item.cptCode] = (seenCodes[item.cptCode] || 0) + 1;
-    if (
-      seenCodes[item.cptCode] > 1 &&
-      !["96372", "97110"].includes(item.cptCode)
-    ) {
-      errorCount++;
-      results.push({
-        ...item,
-        fairMarketRate: fairAmt,
-        status: "duplicate",
-        errorDescription: `Duplicate CPT ${item.cptCode}`,
-        suggestedAmount: 0,
-      });
-      continue;
-    }
-    if (fairAmt !== null && item.chargedAmount > fairAmt * 1.5) {
-      errorCount++;
-      const suggested = +(fairAmt * 1.2).toFixed(2);
-      totalCorrect += suggested;
-      results.push({
-        ...item,
-        fairMarketRate: fairAmt,
-        status: item.chargedAmount > fairAmt * 3 ? "upcoded" : "overcharged",
-        errorDescription: `Charged $${item.chargedAmount} — fair rate $${fairAmt}. Overcharged $${(item.chargedAmount - fairAmt).toFixed(2)}`,
-        suggestedAmount: suggested,
-      });
-      continue;
-    }
-    const suggested = fairAmt !== null
-      ? Math.min(item.chargedAmount, +(fairAmt * 1.2).toFixed(2))
-      : item.chargedAmount;
-    totalCorrect += suggested;
-    results.push({
-      ...item,
-      fairMarketRate: fairAmt,
-      status: "valid",
-      errorDescription: null,
-      suggestedAmount: suggested,
-    });
-  }
-  const totalOvercharge = +(totalCharged - totalCorrect).toFixed(2);
-  return {
-    auditTimestamp: new Date().toISOString(),
-    protocol: {
-      name: "x402",
-      network: NETWORK,
-      price: "$0.01",
-      payTo: process.env.BILL_PROVIDER_PUBLIC_KEY,
-    },
-    totalCharged: +totalCharged.toFixed(2),
-    totalCorrect: +totalCorrect.toFixed(2),
-    totalOvercharge,
-    savingsPercent:
-      totalCharged > 0
-        ? +((totalOvercharge / totalCharged) * 100).toFixed(1)
-        : 0,
-    errorCount,
-    lineItems: results,
-    recommendation:
-      errorCount === 0
-        ? "No errors detected."
-        : `Found ${errorCount} errors totaling $${totalOvercharge} in overcharges (${((totalOvercharge / totalCharged) * 100).toFixed(1)}% of total bill). Strongly recommend filing a formal dispute.`,
-  };
-}
-
 app.get("/bill/sample", (req, res) => {
   const rid = typeof req.query.recipientId === 'string' ? req.query.recipientId : 'rosa_garcia';
   const recipient = recipientsStore.getById(rid);
@@ -768,7 +674,7 @@ app.post("/bill/audit", perRouteLimiters.billAudit, concurrentRequestsMiddleware
       ...lineItem,
       description: sanitizeUserString(lineItem.description),
     }));
-    res.json(runBillAudit(sanitizedLineItems));
+    res.json(auditBill(sanitizedLineItems, { network: NETWORK, payTo: process.env.BILL_PROVIDER_PUBLIC_KEY }));
   } catch (error) {
     if (error instanceof BillAuditValidationError) {
       const validationError = error as BillAuditValidationError;
