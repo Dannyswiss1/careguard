@@ -29,6 +29,8 @@ import { requireApiKey } from "./shared/auth.ts";
 import { validateTask, getSuspiciousTaskCount } from "./shared/task-validation.ts";
 import {
   BillAuditValidationError,
+  FAIR_MARKET_RATES,
+  auditBill,
   validateBillAuditRequest,
 } from "./shared/bill-audit.ts";
 import { sanitizeUserString } from "./shared/sanitize.ts";
@@ -74,7 +76,7 @@ import {
 import { executeTool, runAgent } from "./agent/runner.ts";
 import { resolveRequestedDosage } from "./services/pharmacy-api/dosage.ts";
 import { createPharmacyPricingStore } from "./services/pharmacy-api/db.ts";
-import { PRICING_DATABASE, getAvailableDrugs } from "./shared/pharmacy-pricing.ts";
+import { PRICING_DATABASE, getPharmacyPrices, getAvailableDrugs } from "./shared/pharmacy-pricing.ts";
 import { createCareRecipientsStore } from "./services/care-recipients/db.ts";
 import { createCareRecipientsRouter } from "./services/care-recipients/routes.ts";
 import {
@@ -250,8 +252,37 @@ app.get("/", (_req, res) => {
   });
 });
 
+let isDegradedMode = false;
+
+export function isDegraded(): boolean {
+  return isDegradedMode;
+}
+
+export function setDegradedMode(degraded: boolean): void {
+  isDegradedMode = degraded;
+}
+
+export function requireNonDegradedMode(
+  _req: express.Request,
+  res: express.Response,
+  next: express.NextFunction,
+) {
+  if (isDegradedMode) {
+    res.status(503).json({
+      error: "Service operating in degraded mode: Horizon unreachable at boot",
+      degraded: true,
+    });
+    return;
+  }
+  next();
+}
+
 // --- Liveness probe — no I/O, always fast ---
 app.get("/health", (_req, res) => {
+  if (isDegradedMode) {
+    res.status(200).json({ status: "degraded", degraded: true });
+    return;
+  }
   res.json({ status: "ok" });
 });
 
@@ -515,17 +546,14 @@ app.get("/pharmacy/compare", perRouteLimiters.pharmacyCompare, concurrentRequest
   const dosage = resolveRequestedDosage(drug, query.dosage);
 
   try {
-    const prices = pharmacyStore.getPrices(drug);
-    if (prices.length === 0) {
-      pharmacyUnknownDrugTotal.inc({ drug });
-      res.status(404).json({ ok: false, reason: "NO_PRICES_FOUND" });
-      return;
-    }
+    const { prices, usedZipCode, isFallbackZip } = getPharmacyPrices(drug, query.zip);
     res.json(
       buildCompareResponse({
         drug,
         dosage,
         zip: query.zip,
+        usedZipCode,
+        isFallbackZip,
         payTo: env.data.PHARMACY_1_PUBLIC_KEY,
         network: NETWORK,
         prices,
@@ -540,102 +568,6 @@ app.get("/pharmacy/compare", perRouteLimiters.pharmacyCompare, concurrentRequest
 // ============================================================
 // BILL AUDIT API (was port 3002)
 // ============================================================
-
-const FAIR_MARKET_RATES: Record<
-  string,
-  { description: string; fairRate: number }
-> = {
-  "99213": { description: "Office visit, moderate", fairRate: 130 },
-  "99214": { description: "Office visit, high", fairRate: 195 },
-  "99215": { description: "Office visit, complex", fairRate: 265 },
-  "70553": { description: "MRI brain", fairRate: 450 },
-  "71046": { description: "Chest X-ray", fairRate: 45 },
-  "80053": { description: "Metabolic panel", fairRate: 25 },
-  "85025": { description: "CBC", fairRate: 15 },
-  "36415": { description: "Venipuncture", fairRate: 10 },
-  "93000": { description: "ECG", fairRate: 35 },
-  "99232": { description: "Hospital care, moderate", fairRate: 145 },
-  "99233": { description: "Hospital care, high", fairRate: 210 },
-  "99238": { description: "Discharge day", fairRate: 160 },
-  "96372": { description: "Injection", fairRate: 25 },
-  J0170: { description: "Epinephrine", fairRate: 15 },
-  "97110": { description: "Physical therapy", fairRate: 55 },
-};
-
-function runBillAudit(lineItems: any[]) {
-  const results: any[] = [];
-  let totalCharged = 0,
-    totalCorrect = 0,
-    errorCount = 0;
-  const seenCodes: Record<string, number> = {};
-  for (const item of lineItems) {
-    totalCharged += item.chargedAmount;
-    const fair = FAIR_MARKET_RATES[item.cptCode];
-    const fairAmt = fair !== undefined ? fair.fairRate * item.quantity : null;
-    seenCodes[item.cptCode] = (seenCodes[item.cptCode] || 0) + 1;
-    if (
-      seenCodes[item.cptCode] > 1 &&
-      !["96372", "97110"].includes(item.cptCode)
-    ) {
-      errorCount++;
-      results.push({
-        ...item,
-        fairMarketRate: fairAmt,
-        status: "duplicate",
-        errorDescription: `Duplicate CPT ${item.cptCode}`,
-        suggestedAmount: 0,
-      });
-      continue;
-    }
-    if (fairAmt !== null && item.chargedAmount > fairAmt * 1.5) {
-      errorCount++;
-      const suggested = +(fairAmt * 1.2).toFixed(2);
-      totalCorrect += suggested;
-      results.push({
-        ...item,
-        fairMarketRate: fairAmt,
-        status: item.chargedAmount > fairAmt * 3 ? "upcoded" : "overcharged",
-        errorDescription: `Charged $${item.chargedAmount} — fair rate $${fairAmt}. Overcharged $${(item.chargedAmount - fairAmt).toFixed(2)}`,
-        suggestedAmount: suggested,
-      });
-      continue;
-    }
-    const suggested = fairAmt !== null
-      ? Math.min(item.chargedAmount, +(fairAmt * 1.2).toFixed(2))
-      : item.chargedAmount;
-    totalCorrect += suggested;
-    results.push({
-      ...item,
-      fairMarketRate: fairAmt,
-      status: "valid",
-      errorDescription: null,
-      suggestedAmount: suggested,
-    });
-  }
-  const totalOvercharge = +(totalCharged - totalCorrect).toFixed(2);
-  return {
-    auditTimestamp: new Date().toISOString(),
-    protocol: {
-      name: "x402",
-      network: NETWORK,
-      price: "$0.01",
-      payTo: process.env.BILL_PROVIDER_PUBLIC_KEY,
-    },
-    totalCharged: +totalCharged.toFixed(2),
-    totalCorrect: +totalCorrect.toFixed(2),
-    totalOvercharge,
-    savingsPercent:
-      totalCharged > 0
-        ? +((totalOvercharge / totalCharged) * 100).toFixed(1)
-        : 0,
-    errorCount,
-    lineItems: results,
-    recommendation:
-      errorCount === 0
-        ? "No errors detected."
-        : `Found ${errorCount} errors totaling $${totalOvercharge} in overcharges (${((totalOvercharge / totalCharged) * 100).toFixed(1)}% of total bill). Strongly recommend filing a formal dispute.`,
-  };
-}
 
 app.get("/bill/sample", (req, res) => {
   const rid = typeof req.query.recipientId === 'string' ? req.query.recipientId : 'rosa_garcia';
@@ -742,7 +674,7 @@ app.post("/bill/audit", perRouteLimiters.billAudit, concurrentRequestsMiddleware
       ...lineItem,
       description: sanitizeUserString(lineItem.description),
     }));
-    res.json(runBillAudit(sanitizedLineItems));
+    res.json(auditBill(sanitizedLineItems, { network: NETWORK, payTo: process.env.BILL_PROVIDER_PUBLIC_KEY }));
   } catch (error) {
     if (error instanceof BillAuditValidationError) {
       const validationError = error as BillAuditValidationError;
@@ -1113,17 +1045,33 @@ async function startWalletBalanceScheduler(): Promise<void> {
   logger.info({ expr }, "wallet balance scheduler armed");
 }
 
+export async function bootAccountCheck(
+  serverInstance: Horizon.Server = horizonServer,
+  publicKey: string = agentKeypair.publicKey(),
+  timeoutMs: number = 10000,
+): Promise<{ success: boolean; usdcBalance: string }> {
+  try {
+    const accountPromise = serverInstance.loadAccount(publicKey);
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("Horizon loadAccount timeout (10s)")), timeoutMs),
+    );
+
+    const acc: any = await Promise.race([accountPromise, timeoutPromise]);
+    const usdc = acc.balances.find((b: any) => b.asset_code === "USDC");
+    const usdcBalance = usdc?.balance || "0";
+    isDegradedMode = false;
+    return { success: true, usdcBalance };
+  } catch (err: any) {
+    logger.error({ err: err.message }, "CRITICAL: Horizon loadAccount failed or timed out during boot — continuing in degraded mode");
+    isDegradedMode = true;
+    return { success: false, usdcBalance: "unable to check" };
+  }
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
   const server = app.listen(PORT, async () => {
-    let usdcBalance = "unknown";
-    try {
-      const acc = await horizonServer.loadAccount(agentKeypair.publicKey());
-      const usdc = acc.balances.find((b: any) => b.asset_code === "USDC");
-      usdcBalance = usdc?.balance || "0";
-    } catch {
-      usdcBalance = "unable to check";
-    }
-    logger.info({ port: PORT, network: NETWORK, llm: LLM_MODEL, wallet: agentKeypair.publicKey(), usdc: usdcBalance, availableDrugs: getAvailableDrugs() }, "CareGuard Unified Server started");
+    const { usdcBalance } = await bootAccountCheck();
+    logger.info({ port: PORT, network: NETWORK, llm: LLM_MODEL, wallet: agentKeypair.publicKey(), usdc: usdcBalance, degraded: isDegradedMode, availableDrugs: getAvailableDrugs() }, "CareGuard Unified Server started");
     await startWalletBalanceScheduler();
   });
 
