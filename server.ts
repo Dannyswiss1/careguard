@@ -250,8 +250,37 @@ app.get("/", (_req, res) => {
   });
 });
 
+let isDegradedMode = false;
+
+export function isDegraded(): boolean {
+  return isDegradedMode;
+}
+
+export function setDegradedMode(degraded: boolean): void {
+  isDegradedMode = degraded;
+}
+
+export function requireNonDegradedMode(
+  _req: express.Request,
+  res: express.Response,
+  next: express.NextFunction,
+) {
+  if (isDegradedMode) {
+    res.status(503).json({
+      error: "Service operating in degraded mode: Horizon unreachable at boot",
+      degraded: true,
+    });
+    return;
+  }
+  next();
+}
+
 // --- Liveness probe — no I/O, always fast ---
 app.get("/health", (_req, res) => {
+  if (isDegradedMode) {
+    res.status(200).json({ status: "degraded", degraded: true });
+    return;
+  }
   res.json({ status: "ok" });
 });
 
@@ -1110,17 +1139,33 @@ async function startWalletBalanceScheduler(): Promise<void> {
   logger.info({ expr }, "wallet balance scheduler armed");
 }
 
+export async function bootAccountCheck(
+  serverInstance: Horizon.Server = horizonServer,
+  publicKey: string = agentKeypair.publicKey(),
+  timeoutMs: number = 10000,
+): Promise<{ success: boolean; usdcBalance: string }> {
+  try {
+    const accountPromise = serverInstance.loadAccount(publicKey);
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("Horizon loadAccount timeout (10s)")), timeoutMs),
+    );
+
+    const acc: any = await Promise.race([accountPromise, timeoutPromise]);
+    const usdc = acc.balances.find((b: any) => b.asset_code === "USDC");
+    const usdcBalance = usdc?.balance || "0";
+    isDegradedMode = false;
+    return { success: true, usdcBalance };
+  } catch (err: any) {
+    logger.error({ err: err.message }, "CRITICAL: Horizon loadAccount failed or timed out during boot — continuing in degraded mode");
+    isDegradedMode = true;
+    return { success: false, usdcBalance: "unable to check" };
+  }
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
   const server = app.listen(PORT, async () => {
-    let usdcBalance = "unknown";
-    try {
-      const acc = await horizonServer.loadAccount(agentKeypair.publicKey());
-      const usdc = acc.balances.find((b: any) => b.asset_code === "USDC");
-      usdcBalance = usdc?.balance || "0";
-    } catch {
-      usdcBalance = "unable to check";
-    }
-    logger.info({ port: PORT, network: NETWORK, llm: LLM_MODEL, wallet: agentKeypair.publicKey(), usdc: usdcBalance, availableDrugs: getAvailableDrugs() }, "CareGuard Unified Server started");
+    const { usdcBalance } = await bootAccountCheck();
+    logger.info({ port: PORT, network: NETWORK, llm: LLM_MODEL, wallet: agentKeypair.publicKey(), usdc: usdcBalance, degraded: isDegradedMode, availableDrugs: getAvailableDrugs() }, "CareGuard Unified Server started");
     await startWalletBalanceScheduler();
   });
 
