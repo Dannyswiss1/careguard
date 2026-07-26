@@ -1,5 +1,7 @@
 # CareGuard
 
+[![CI](https://github.com/harystyleseze/careguard/actions/workflows/ci.yml/badge.svg)](https://github.com/harystyleseze/careguard/actions/workflows/ci.yml)
+
 **An autonomous AI agent that manages elderly healthcare spending on Stellar.**
 
 Compares medication prices across pharmacies, audits medical bills for errors, checks drug interactions, and executes real USDC payments — all within caregiver-controlled spending policies. Every transaction settles on Stellar testnet via x402 and MPP.
@@ -187,6 +189,8 @@ Tests are organized in two workspaces:
 - **Dashboard workspace** – frontend tests for `dashboard/src/` (jsdom environment via `dashboard/vitest.config.ts`)
 
 Shared test helpers (environment scrubber, fetch mock, Horizon mock) live in `tests/setup.ts`.
+
+> **Branch protection:** The `main` branch requires the CI check (`ci`) to pass before merging. Ensure all typecheck, lint, and test steps are green on your PR.
 
 ---
 
