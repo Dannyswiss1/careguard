@@ -36,6 +36,7 @@ export interface AgentLogEntry {
   id: string;
   timestamp: number;
   message: string;
+  errorDetail?: string;
 }
 
 export interface PaginationData {
