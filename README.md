@@ -47,6 +47,8 @@ Every payment is a real Stellar testnet transaction verifiable on [stellar.exper
 
 For a full runtime flow diagram, module map, and integration details, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+For deployment topology (Docker Compose and Render), see [docs/deployment/topology.md](docs/deployment/topology.md).
+
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -164,6 +166,21 @@ Health checks are enabled on every service. Targets:
 Boot time on a warm Docker is ~30s (cold first build is much longer due to npm install). If the dashboard waits forever for `server: healthy`, check `docker compose logs server` — the most common cause is missing/invalid `OZ_FACILITATOR_API_KEY` or `AGENT_SECRET_KEY` in `.env`.
 
 See [docs/observability/health-checks.md](docs/observability/health-checks.md) for the `/health` and `/ready` response schemas and what each dependency check means.
+
+---
+
+## API Documentation
+
+The OpenAPI 3.1 spec is rendered as an interactive reference by the unified server:
+
+| What | Local | Production |
+|------|-------|------------|
+| Interactive reference | <http://localhost:3000/docs> | <https://api.careguard.xyz/docs> |
+| Raw spec | <http://localhost:3000/openapi.yml> | <https://api.careguard.xyz/openapi.yml> |
+
+The spec is generated (`npm run gen-openapi`), never hand-edited, and validated in
+CI (`npm run validate:openapi`). See [docs/api/README.md](docs/api/README.md) for the
+hosting setup, CI validation, and how the x402 `X-PAYMENT` auth scheme works.
 
 ---
 

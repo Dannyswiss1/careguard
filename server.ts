@@ -24,6 +24,7 @@ import { z } from "zod";
 import { applyX402Middleware } from "./shared/x402-middleware.ts";
 import { createCorsMiddleware } from "./shared/cors.ts";
 import { applySecurityMiddleware } from "./shared/security-middleware.ts";
+import { createApiDocsRouter } from "./shared/api-docs.ts";
 import { logger } from "./shared/logger.ts";
 import { requireApiKey } from "./shared/auth.ts";
 import { validateTask, getSuspiciousTaskCount } from "./shared/task-validation.ts";
@@ -233,6 +234,9 @@ app.use("/agent/audit", auditRouter);
 
 // --- Prometheus metrics ---
 app.get("/metrics", metricsHandler());
+
+// --- API docs: GET /docs (Scalar UI) and GET /openapi.yml (raw spec) ---
+app.use(createApiDocsRouter());
 
 // --- Root info ---
 app.get("/", (_req, res) => {
