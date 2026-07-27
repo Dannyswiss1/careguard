@@ -36,7 +36,15 @@ Each route now has its own rate-limit bucket (configured in `shared/rate-limit.t
 | `RATE_LIMIT_DRUG_INTERACTIONS` | 30 req/min | `GET /drug/interactions` |
 | `RATE_LIMIT_PHARMACY_ORDER` | 10 req/min | `POST /pharmacy/order` |
 
-A `route_concurrent_requests{route}` Prometheus gauge is also emitted so operators can observe in-flight concurrency per route and alert on sustained saturation.
+An env value that is not a positive integer (empty, `abc`, `0`, `-5`, `2.5`) is
+ignored and the default in the table above applies — a typo must not silently
+disable limiting for a route.
+
+Rejected requests get `429` with a `Retry-After` header (window length in
+seconds) and are counted on `ratelimit_hits_total{policy}`, labelled per policy
+so one route's rejections are never attributed to another.
+
+A `route_concurrent_requests{route}` Prometheus gauge is also emitted so operators can observe in-flight concurrency per route and alert on sustained saturation. Express fires both `finish` and `close` for most responses, so the decrement is latched — the gauge counts each request exactly once and cannot drift negative.
 
 ### Long-term: split into per-service containers behind a gateway
 
