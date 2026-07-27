@@ -82,6 +82,14 @@ For information on versioning, deprecations, hotfixes, and rollbacks, see:
 - [Hotfix Process](docs/release/hotfix-process.md) — Emergency patch release workflow
 - [Rollback Procedure](docs/release/rollback.md) — How to revert a bad release
 
+## Architecture Decisions
+
+Significant architectural decisions are documented as ADRs in
+[docs/adr/README.md](docs/adr/README.md). Before making a major
+change, check whether a prior ADR covers the topic. If no existing
+ADR addresses the decision, propose one using the template in the
+ADR index.
+
 ## Security
 
 - Never commit secrets or `.env` files — they are gitignored
