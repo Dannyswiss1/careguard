@@ -14,10 +14,13 @@ export function isValidLocale(locale: string): locale is Locale {
   return locales.includes(locale as Locale);
 }
 
-export function formatCurrency(amount: number, locale: Locale): string {
+export function formatCurrency(amount: number, locale: Locale, decimals?: number): string {
   const formatter = new Intl.NumberFormat(locale === "es" ? "es-ES" : "en-US", {
     style: "currency",
     currency: "USD",
+    ...(decimals !== undefined
+      ? { minimumFractionDigits: decimals, maximumFractionDigits: decimals }
+      : {}),
   });
   return formatter.format(amount);
 }
