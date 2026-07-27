@@ -6,6 +6,7 @@ import { copyText } from "../../lib/clipboard";
 import type { RecipientProfile } from "../../lib/types";
 import { ConfirmDialog } from "../primitives/confirm-dialog";
 import { TxLink } from "../primitives/tx-link";
+import { formatTime, type Locale } from "../../i18n";
 import type {
   AgentLogEntry,
   PaginationData,
@@ -29,6 +30,9 @@ export interface ActivityTabProps {
   onResetAgent: () => void;
   loadingTransactions?: boolean;
   loadingSpending?: boolean;
+  // #1139 — defaults to "en" so existing callers that don't pass a locale
+  // render identically to before this change.
+  locale?: Locale;
 }
 
 export function ActivityTab({
@@ -44,6 +48,7 @@ export function ActivityTab({
   setPageSize,
   spending,
   onResetAgent,
+  locale = "en",
 }: ActivityTabProps) {
   const [showAllLogEntries, setShowAllLogEntries] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -294,7 +299,7 @@ export function ActivityTab({
                       return (
                         <tr key={item.id} className="border-b border-slate-100 last:border-0 bg-slate-50/50">
                           <td className="hidden md:table-cell px-4 py-2 text-xs text-slate-400">
-                            {new Date(au.timestamp).toLocaleTimeString()}
+                            {formatTime(new Date(au.timestamp), locale)}
                           </td>
                           <td className="px-4 py-2">
                             <span className="px-2 py-0.5 rounded text-xs font-medium bg-slate-800 text-slate-200">
@@ -318,7 +323,7 @@ export function ActivityTab({
                         className="border-b border-slate-100 last:border-0"
                       >
                         <td className="hidden md:table-cell px-4 py-2 text-xs text-slate-400">
-                          {new Date(tx.timestamp).toLocaleTimeString()}
+                          {formatTime(new Date(tx.timestamp), locale)}
                         </td>
                         <td className="px-4 py-2">
                           <span
