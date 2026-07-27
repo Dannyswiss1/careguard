@@ -167,6 +167,21 @@ See [docs/observability/health-checks.md](docs/observability/health-checks.md) f
 
 ---
 
+## API Documentation
+
+The OpenAPI 3.1 spec is rendered as an interactive reference by the unified server:
+
+| What | Local | Production |
+|------|-------|------------|
+| Interactive reference | <http://localhost:3000/docs> | <https://api.careguard.xyz/docs> |
+| Raw spec | <http://localhost:3000/openapi.yml> | <https://api.careguard.xyz/openapi.yml> |
+
+The spec is generated (`npm run gen-openapi`), never hand-edited, and validated in
+CI (`npm run validate:openapi`). See [docs/api/README.md](docs/api/README.md) for the
+hosting setup, CI validation, and how the x402 `X-PAYMENT` auth scheme works.
+
+---
+
 ## Running Tests
 
 ```bash
