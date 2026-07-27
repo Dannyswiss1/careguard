@@ -19,15 +19,60 @@ components:
   schemas:
     Error:
       type: 'object'
+      description: 'Standard error envelope for 4xx/5xx responses. See docs/error-codes.md for the full registry of `code` values, their meaning, and remediation.'
       properties:
         error:
           type: 'string'
           description: 'Human-readable message — do NOT branch on this value.'
         code:
           type: 'string'
+          enum:
+            - 'VALIDATION_MISSING_FIELD'
+            - 'VALIDATION_INVALID_INPUT'
+            - 'VALIDATION_INSUFFICIENT_SCORE'
+            - 'AUTH_TOKEN_MISSING'
+            - 'AUTH_TOKEN_EXPIRED'
+            - 'AUTH_TOKEN_INVALID'
+            - 'AUTH_ADMIN_REQUIRED'
+            - 'NOT_FOUND_DRUG'
+            - 'NOT_FOUND_PHARMACY'
+            - 'NOT_FOUND_AGENT'
+            - 'BODY_TOO_LARGE'
+            - 'POLICY_DAILY_LIMIT'
+            - 'POLICY_MONTHLY_LIMIT'
+            - 'POLICY_APPROVAL_REQUIRED'
+            - 'POLICY_CATEGORY_BLOCKED'
+            - 'PAYMENT_INSUFFICIENT_FUNDS'
+            - 'PAYMENT_TX_FAILED'
+            - 'PAYMENT_TX_TIMEOUT'
+            - 'RATE_LIMIT_EXCEEDED'
+            - 'UPSTREAM_HORIZON_DOWN'
+            - 'UPSTREAM_LLM_DOWN'
+            - 'UPSTREAM_FACILITATOR_DOWN'
+            - 'UPSTREAM_FACILITATOR_ERROR'
+            - 'UPSTREAM_TIMEOUT'
+            - 'SERVER_DEGRADED'
+            - 'SERVER_INTERNAL_ERROR'
           description: 'Stable machine-readable error code. See docs/error-codes.md for the full registry.'
         details:
           type: 'object'
+      required:
+        - 'error'
+        - 'code'
+    X402PaymentChallenge:
+      type: 'object'
+      description: 'x402 payment challenge returned on 402 responses from paid routes. Shape is defined by the x402 protocol (see docs/setup/x402.md), not the shared Error schema — clients must branch on HTTP status 402, not on a `code` field, to detect this response.'
+      properties:
+        x402Version:
+          type: 'integer'
+        accepts:
+          type: 'array'
+          description: 'Accepted payment schemes, assets, and amounts for this route.'
+          items:
+            type: 'object'
+        error:
+          type: 'string'
+          description: 'Human-readable reason payment is required or was rejected.'
     ReadinessResponse:
       type: 'object'
       description: 'See docs/observability/health-checks.md for the full schema and check semantics.'
@@ -105,6 +150,18 @@ paths:
                     type: 'number'
                   categories:
                     type: 'object'
+        429:
+          description: 'Too many requests for this route''s rate-limit policy. `code` is RATE_LIMIT_EXCEEDED; back off and retry after the `Retry-After` header.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        500:
+          description: 'Unhandled server error. `code` is SERVER_INTERNAL_ERROR.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /pharmacy/compare:
     get:
       summary: 'Compare pharmacy prices for a drug'
@@ -140,7 +197,35 @@ paths:
         200:
           description: 'Pharmacy query results'
         400:
-          description: 'Invalid request'
+          description: 'Invalid request. `code` is one of VALIDATION_MISSING_FIELD, VALIDATION_INVALID_INPUT.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        402:
+          description: 'Payment required. Response is an x402 payment challenge (not the shared Error schema): the body describes accepted payment schemes/amounts and an X-PAYMENT-related header identifies the facilitator. Retry the request with an X-PAYMENT header containing a valid payment proof for one of the accepted schemes.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/X402PaymentChallenge'
+        404:
+          description: 'Drug or pharmacy not found. `code` is NOT_FOUND_DRUG or NOT_FOUND_PHARMACY.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        429:
+          description: 'Too many requests for this route''s rate-limit policy. `code` is RATE_LIMIT_EXCEEDED; back off and retry after the `Retry-After` header.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        500:
+          description: 'Unhandled server error. `code` is SERVER_INTERNAL_ERROR.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /pharmacy/prices:
     post:
       summary: 'Admin upsert for a drug price at a pharmacy'
@@ -173,7 +258,29 @@ paths:
         200:
           description: 'Price created or updated'
         400:
-          description: 'Validation error'
+          description: 'Validation error. `code` is one of VALIDATION_MISSING_FIELD, VALIDATION_INVALID_INPUT.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        401:
+          description: 'Missing admin token. `code` is AUTH_TOKEN_MISSING.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        403:
+          description: 'Admin token invalid or insufficient. `code` is AUTH_TOKEN_INVALID or AUTH_ADMIN_REQUIRED.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        500:
+          description: 'Unhandled server error. `code` is SERVER_INTERNAL_ERROR.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /bill/audit:
     post:
       summary: 'Audit medical bills'
@@ -218,7 +325,7 @@ paths:
         200:
           description: 'Audit results'
         400:
-          description: 'Validation error'
+          description: 'Validation error. `code` is one of VALIDATION_MISSING_FIELD, VALIDATION_INVALID_INPUT.'
           content:
             application/json:
               schema:
@@ -226,6 +333,30 @@ paths:
                 properties:
                   errors:
                     type: 'array'
+        402:
+          description: 'Payment required. Response is an x402 payment challenge (not the shared Error schema): the body describes accepted payment schemes/amounts and an X-PAYMENT-related header identifies the facilitator. Retry the request with an X-PAYMENT header containing a valid payment proof for one of the accepted schemes.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/X402PaymentChallenge'
+        413:
+          description: 'Request body exceeds the configured size limit. `code` is BODY_TOO_LARGE; `details.limit` reports the configured maximum in bytes.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        429:
+          description: 'Too many requests for this route''s rate-limit policy. `code` is RATE_LIMIT_EXCEEDED; back off and retry after the `Retry-After` header.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        500:
+          description: 'Unhandled server error. `code` is SERVER_INTERNAL_ERROR.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /drug/interactions:
     get:
       summary: 'Check drug interactions for a medication list'
@@ -246,7 +377,29 @@ paths:
         200:
           description: 'Drug interaction results'
         400:
-          description: 'Validation error'
+          description: 'Validation error. `code` is one of VALIDATION_MISSING_FIELD, VALIDATION_INVALID_INPUT, VALIDATION_INSUFFICIENT_SCORE.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        402:
+          description: 'Payment required. Response is an x402 payment challenge (not the shared Error schema): the body describes accepted payment schemes/amounts and an X-PAYMENT-related header identifies the facilitator. Retry the request with an X-PAYMENT header containing a valid payment proof for one of the accepted schemes.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/X402PaymentChallenge'
+        429:
+          description: 'Too many requests for this route''s rate-limit policy. `code` is RATE_LIMIT_EXCEEDED; back off and retry after the `Retry-After` header.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        500:
+          description: 'Unhandled server error. `code` is SERVER_INTERNAL_ERROR.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /pharmacy/order:
     post:
       summary: 'Submit a paid pharmacy order'
@@ -281,9 +434,35 @@ paths:
         200:
           description: 'Order confirmed'
         400:
-          description: 'Validation error'
+          description: 'Validation error. `code` is one of VALIDATION_MISSING_FIELD, VALIDATION_INVALID_INPUT.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         402:
-          description: 'Payment required'
+          description: 'Payment required. Response is an x402 payment challenge (not the shared Error schema): the body describes accepted payment schemes/amounts and an X-PAYMENT-related header identifies the facilitator. Retry the request with an X-PAYMENT header containing a valid payment proof for one of the accepted schemes.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/X402PaymentChallenge'
+        429:
+          description: 'Too many requests for this route''s rate-limit policy. `code` is RATE_LIMIT_EXCEEDED; back off and retry after the `Retry-After` header.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        500:
+          description: 'Order or payment processing failed. `code` is one of SERVER_INTERNAL_ERROR, PAYMENT_TX_FAILED.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        502:
+          description: 'Stellar transaction timed out or an upstream dependency is unreachable. `code` is one of PAYMENT_TX_TIMEOUT, UPSTREAM_HORIZON_DOWN, UPSTREAM_FACILITATOR_DOWN, UPSTREAM_FACILITATOR_ERROR.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /docs:
     get:
       summary: 'API documentation UI'
