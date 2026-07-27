@@ -20,13 +20,19 @@ components:
   schemas:
     Error:
       type: 'object'
+      required:
+        - error
+        - code
       properties:
         error:
           type: 'string'
+          description: 'A human-readable description of the error.'
         code:
           type: 'string'
+          description: 'A stable, machine-readable uppercase SNAKE_CASE code identifying the specific type of error.'
         details:
           type: 'object'
+          description: 'Structured metadata or field-level details specific to the error code.'
     ReadinessResponse:
       type: 'object'
       description: 'See docs/observability/health-checks.md for the full schema and check semantics.'
@@ -49,6 +55,49 @@ components:
               oneOf:
                 - type: 'boolean'
                 - type: 'string'
+  responses:
+    BadRequestError:
+      description: 'Bad Request / Validation Error'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    UnauthorizedError:
+      description: 'Missing or invalid authentication credentials'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ForbiddenError:
+      description: 'Forbidden access (e.g., CSRF token mismatch, invalid admin credentials)'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFoundError:
+      description: 'Requested resource not found'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    PaymentRequiredError:
+      description: 'Payment required (x402 / MPP Challenge)'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ConflictError:
+      description: 'Conflict / State violation (e.g., Agent is paused)'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    InternalServerError:
+      description: 'Internal server error'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
 paths:
   /health:
     get:
@@ -106,6 +155,12 @@ paths:
                     type: 'number'
                   categories:
                     type: 'object'
+        401:
+          $ref: '#/components/responses/UnauthorizedError'
+        403:
+          $ref: '#/components/responses/ForbiddenError'
+        500:
+          $ref: '#/components/responses/InternalServerError'
   /pharmacy/compare:
     get:
       summary: 'Compare pharmacy prices for a drug'
@@ -142,7 +197,9 @@ paths:
         200:
           description: 'Pharmacy query results'
         400:
-          description: 'Invalid request'
+          $ref: '#/components/responses/BadRequestError'
+        402:
+          $ref: '#/components/responses/PaymentRequiredError'
   /pharmacy/prices:
     post:
       summary: 'Admin upsert for a drug price at a pharmacy'
@@ -175,7 +232,11 @@ paths:
         200:
           description: 'Price created or updated'
         400:
-          description: 'Validation error'
+          $ref: '#/components/responses/BadRequestError'
+        401:
+          $ref: '#/components/responses/UnauthorizedError'
+        403:
+          $ref: '#/components/responses/ForbiddenError'
   /bill/audit:
     post:
       summary: 'Audit medical bills'
@@ -221,14 +282,9 @@ paths:
         200:
           description: 'Audit results'
         400:
-          description: 'Validation error'
-          content:
-            application/json:
-              schema:
-                type: 'object'
-                properties:
-                  errors:
-                    type: 'array'
+          $ref: '#/components/responses/BadRequestError'
+        402:
+          $ref: '#/components/responses/PaymentRequiredError'
   /drug/interactions:
     get:
       summary: 'Check drug interactions for a medication list'
@@ -250,7 +306,9 @@ paths:
         200:
           description: 'Drug interaction results'
         400:
-          description: 'Validation error'
+          $ref: '#/components/responses/BadRequestError'
+        402:
+          $ref: '#/components/responses/PaymentRequiredError'
   /pharmacy/order:
     post:
       summary: 'Submit a paid pharmacy order'
@@ -285,9 +343,9 @@ paths:
         200:
           description: 'Order confirmed'
         400:
-          description: 'Validation error'
+          $ref: '#/components/responses/BadRequestError'
         402:
-          description: 'Payment required'
+          $ref: '#/components/responses/PaymentRequiredError'
   /docs:
     get:
       summary: 'API documentation UI'

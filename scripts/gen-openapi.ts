@@ -65,6 +65,7 @@ interface OpenAPISpec {
       };
     };
     schemas: Record<string, Record<string, unknown>>;
+    responses?: Record<string, Record<string, unknown>>;
   };
   paths: Record<string, OpenAPIPath>;
 }
@@ -118,10 +119,20 @@ function generateSpec(): OpenAPISpec {
       schemas: {
         Error: {
           type: "object",
+          required: ["error", "code"],
           properties: {
-            error: { type: "string" },
-            code: { type: "string" },
-            details: { type: "object" },
+            error: {
+              type: "string",
+              description: "A human-readable description of the error.",
+            },
+            code: {
+              type: "string",
+              description: "A stable, machine-readable uppercase SNAKE_CASE code identifying the specific type of error.",
+            },
+            details: {
+              type: "object",
+              description: "Structured metadata or field-level details specific to the error code.",
+            },
           },
         },
         ReadinessResponse: {
@@ -137,6 +148,64 @@ function generateSpec(): OpenAPISpec {
                 horizon: { type: "boolean" },
                 ozFacilitator: { oneOf: [{ type: "boolean" }, { type: "string" }] },
               },
+            },
+          },
+        },
+      },
+      responses: {
+        BadRequestError: {
+          description: "Bad Request / Validation Error",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/Error" },
+            },
+          },
+        },
+        UnauthorizedError: {
+          description: "Missing or invalid authentication credentials",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/Error" },
+            },
+          },
+        },
+        ForbiddenError: {
+          description: "Forbidden access (e.g., CSRF token mismatch, invalid admin credentials)",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/Error" },
+            },
+          },
+        },
+        NotFoundError: {
+          description: "Requested resource not found",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/Error" },
+            },
+          },
+        },
+        PaymentRequiredError: {
+          description: "Payment required (x402 / MPP Challenge)",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/Error" },
+            },
+          },
+        },
+        ConflictError: {
+          description: "Conflict / State violation (e.g., Agent is paused)",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/Error" },
+            },
+          },
+        },
+        InternalServerError: {
+          description: "Internal server error",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/Error" },
             },
           },
         },
@@ -209,6 +278,9 @@ function generateSpec(): OpenAPISpec {
                 },
               },
             },
+            "401": { $ref: "#/components/responses/UnauthorizedError" },
+            "403": { $ref: "#/components/responses/ForbiddenError" },
+            "500": { $ref: "#/components/responses/InternalServerError" },
           },
         },
       },
@@ -256,7 +328,10 @@ function generateSpec(): OpenAPISpec {
               description: "Pharmacy query results",
             },
             "400": {
-              description: "Invalid request",
+              $ref: "#/components/responses/BadRequestError",
+            },
+            "402": {
+              $ref: "#/components/responses/PaymentRequiredError",
             },
           },
         },
@@ -298,7 +373,13 @@ function generateSpec(): OpenAPISpec {
               description: "Price created or updated",
             },
             "400": {
-              description: "Validation error",
+              $ref: "#/components/responses/BadRequestError",
+            },
+            "401": {
+              $ref: "#/components/responses/UnauthorizedError",
+            },
+            "403": {
+              $ref: "#/components/responses/ForbiddenError",
             },
           },
         },
@@ -352,17 +433,10 @@ function generateSpec(): OpenAPISpec {
               description: "Audit results",
             },
             "400": {
-              description: "Validation error",
-              content: {
-                "application/json": {
-                  schema: {
-                    type: "object",
-                    properties: {
-                      errors: { type: "array" },
-                    },
-                  },
-                },
-              },
+              $ref: "#/components/responses/BadRequestError",
+            },
+            "402": {
+              $ref: "#/components/responses/PaymentRequiredError",
             },
           },
         },
@@ -391,7 +465,10 @@ function generateSpec(): OpenAPISpec {
               description: "Drug interaction results",
             },
             "400": {
-              description: "Validation error",
+              $ref: "#/components/responses/BadRequestError",
+            },
+            "402": {
+              $ref: "#/components/responses/PaymentRequiredError",
             },
           },
         },
@@ -434,10 +511,10 @@ function generateSpec(): OpenAPISpec {
               description: "Order confirmed",
             },
             "400": {
-              description: "Validation error",
+              $ref: "#/components/responses/BadRequestError",
             },
             "402": {
-              description: "Payment required",
+              $ref: "#/components/responses/PaymentRequiredError",
             },
           },
         },
