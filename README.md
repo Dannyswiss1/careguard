@@ -47,6 +47,8 @@ Every payment is a real Stellar testnet transaction verifiable on [stellar.exper
 
 For a full runtime flow diagram, module map, and integration details, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+For deployment topology (Docker Compose and Render), see [docs/deployment/topology.md](docs/deployment/topology.md).
+
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
