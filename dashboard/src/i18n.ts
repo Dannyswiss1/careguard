@@ -31,6 +31,21 @@ export function formatDate(date: Date | string, locale: Locale): string {
   });
 }
 
+// #1139 — time-only formatter mirroring formatDate(), for call sites that
+// previously used a bare toLocaleTimeString() with no locale argument.
+export function formatTime(date: Date | string, locale: Locale): string {
+  const d = typeof date === "string" ? new Date(date) : date;
+  return d.toLocaleTimeString(locale === "es" ? "es-ES" : "en-US");
+}
+
+// #1139 — combined date+time formatter mirroring formatDate(), for call
+// sites that previously used a bare toLocaleString() with no locale
+// argument (which renders both date and time, unlike toLocaleDateString()).
+export function formatDateTime(date: Date | string, locale: Locale): string {
+  const d = typeof date === "string" ? new Date(date) : date;
+  return d.toLocaleString(locale === "es" ? "es-ES" : "en-US");
+}
+
 export function formatNumber(num: number, locale: Locale): string {
   return new Intl.NumberFormat(locale === "es" ? "es-ES" : "en-US").format(num);
 }
