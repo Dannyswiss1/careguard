@@ -22,8 +22,10 @@ components:
       properties:
         error:
           type: 'string'
+          description: 'Human-readable message — do NOT branch on this value.'
         code:
           type: 'string'
+          description: 'Stable machine-readable error code. See docs/error-codes.md for the full registry.'
         details:
           type: 'object'
     ReadinessResponse:
