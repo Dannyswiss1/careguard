@@ -16,6 +16,8 @@ Operational runbooks for on-call engineers. Each runbook follows the template:
 | [llm-rate-limit.md](llm-rate-limit.md) | Groq 429 / LLM provider rate-limit hit — behaviour, provider switching mid-incident |
 | [dashboard-disconnected.md](dashboard-disconnected.md) | Dashboard shows "Disconnected" chip — diagnosing API connectivity issues |
 | [horizon-down.md](horizon-down.md) | Stellar Horizon outage or testnet congestion — detection, in-doubt settlement verification, fee-bump tuning, recovery |
+| [backup-restore.md](backup-restore.md) | Disaster recovery procedure with RTO/RPO targets, backups, step-by-step restore, and integrity checks |
+
 
 ---
 
