@@ -9,7 +9,7 @@
 import { z } from "zod";
 import { writeFileSync, mkdirSync } from "fs";
 import path from "path";
-import { fileURLToPath } from "url";
+import { fileURLToPath, pathToFileURL } from "url";
 import {
   MAX_FREE_TEXT_LENGTH,
   MAX_FREE_TEXT_LIST_LENGTH,
@@ -83,7 +83,7 @@ function zodToJsonSchema(schema: z.ZodType): Record<string, unknown> {
   };
 }
 
-function generateSpec(): OpenAPISpec {
+export function generateSpec(): OpenAPISpec {
   return {
     openapi: "3.1.0",
     info: {
@@ -534,7 +534,7 @@ function generateSpec(): OpenAPISpec {
   };
 }
 
-function saveSpec() {
+export function saveSpec() {
   mkdirSync(docsDir, { recursive: true });
 
   const spec = generateSpec();
@@ -546,7 +546,16 @@ function saveSpec() {
   console.log(`✓ OpenAPI spec generated: ${filePath}`);
 }
 
-function specToYaml(obj: unknown, indent = 0): string {
+/** True for `[]` and `{}` — containers YAML must keep inline after a key. */
+function isEmptyContainer(value: unknown): boolean {
+  if (Array.isArray(value)) return value.length === 0;
+  if (typeof value === "object" && value !== null) {
+    return Object.keys(value as Record<string, unknown>).length === 0;
+  }
+  return false;
+}
+
+export function specToYaml(obj: unknown, indent = 0): string {
   const spaces = " ".repeat(indent);
 
   if (obj === null || obj === undefined) {
@@ -568,12 +577,22 @@ function specToYaml(obj: unknown, indent = 0): string {
       .join("\n");
   }
 
+  if (typeof obj === "object" && isEmptyContainer(obj)) {
+    return "{}";
+  }
+
   if (typeof obj === "object") {
     const entries = Object.entries(obj as Record<string, unknown>);
     if (entries.length === 0) return "{}";
     return entries
       .map(([key, value]) => {
         const valueStr = specToYaml(value, indent + 2);
+        // Empty arrays/objects serialize to "[]"/"{}" with no indentation, so
+        // they must stay on the key's line — emitting them on the next line
+        // puts a bare "[]" in column 0 and makes the document unparseable.
+        if (isEmptyContainer(value)) {
+          return `${spaces}${key}: ${valueStr}`;
+        }
         if (
           valueStr.includes("\n") ||
           (typeof value === "object" && value !== null)
@@ -588,4 +607,8 @@ function specToYaml(obj: unknown, indent = 0): string {
   return String(obj);
 }
 
-saveSpec();
+// Only write the file when run directly (`npm run gen-openapi`); importing this
+// module — e.g. from the CI validator — must have no side effects.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  saveSpec();
+}

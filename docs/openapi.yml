@@ -9,8 +9,7 @@ servers:
   - url: 'https://api.careguard.xyz'
     description: 'Production server'
 security:
-  - X402Auth:
-[]
+  - X402Auth: []
 components:
   securitySchemes:
     X402Auth:
@@ -104,8 +103,7 @@ paths:
       summary: 'Liveness probe — always fast, no dependency checks'
       tags:
         - 'Observability'
-      security:
-[]
+      security: []
       responses:
         200:
           description: 'Process is up'
@@ -123,8 +121,7 @@ paths:
       summary: 'Readiness probe — checks required env, Horizon, and OZ facilitator status'
       tags:
         - 'Observability'
-      security:
-[]
+      security: []
       responses:
         200:
           description: 'All dependency checks passed'
@@ -167,8 +164,7 @@ paths:
       tags:
         - 'Pharmacy'
       security:
-        - X402Auth:
-[]
+        - X402Auth: []
       parameters:
         - in: 'query'
           name: 'drug'
@@ -243,8 +239,7 @@ paths:
       tags:
         - 'Bill Audit'
       security:
-        - X402Auth:
-[]
+        - X402Auth: []
       requestBody:
         required: true
         content:
@@ -291,8 +286,7 @@ paths:
       tags:
         - 'Drug Interactions'
       security:
-        - X402Auth:
-[]
+        - X402Auth: []
       parameters:
         - in: 'query'
           name: 'meds'
