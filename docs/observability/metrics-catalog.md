@@ -5,6 +5,10 @@ are registered on the shared `prom-client` `Registry` in [`shared/metrics.ts`](.
 (queue gauges live in [`shared/agent-queue.ts`](../../shared/agent-queue.ts)) and served at `/metrics`.
 See the [Grafana dashboard guide](./dashboard-guide.md) for how these are visualized.
 
+> **Before adding a metric:** read the [metrics naming and labelling conventions](./metrics-naming.md)
+> for prefix rules, `_total` suffix, base-unit policy, and label-cardinality limits.
+> Add every new metric to this catalog and run through the checklist in that guide.
+
 ## Agent
 
 | Metric | Type | Labels | Meaning | Used by |
