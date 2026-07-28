@@ -2,6 +2,7 @@
 
 import { useState, useMemo } from "react";
 import { downloadTransactionPDF } from "../../app/pdf";
+import { copyText } from "../../lib/clipboard";
 import type { RecipientProfile } from "../../lib/types";
 import { ConfirmDialog } from "../primitives/confirm-dialog";
 import { TxLink } from "../primitives/tx-link";
@@ -151,7 +152,37 @@ export function ActivityTab({
               )}
               {(showAllLogEntries ? agentLog : agentLog.slice(-50)).map(
                 (entry) => (
-                  <div key={entry.id}>{entry.message}</div>
+                  <div key={entry.id}>
+                    {entry.errorDetail ? (
+                      <details className="group">
+                        <summary className="cursor-pointer list-none flex items-center gap-1 hover:text-green-300">
+                          <span className="text-xs opacity-60 group-open:opacity-100">▸</span>
+                          {entry.message}
+                        </summary>
+                        <div className="ml-4 mt-1 space-y-1">
+                          <pre className="text-xs text-red-400 whitespace-pre-wrap break-all bg-slate-800 p-2 rounded">
+                            {entry.errorDetail}
+                          </pre>
+                          <button
+                            onClick={async () => {
+                              if (!entry.errorDetail) return;
+                              const result = await copyText(entry.errorDetail);
+                              if (result === "ok" || result === "fallback") {
+                                const btn = document.activeElement as HTMLElement;
+                                const orig = btn?.textContent;
+                                if (btn) { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = orig; }, 1500); }
+                              }
+                            }}
+                            className="text-[10px] text-sky-400 hover:text-sky-300 underline"
+                          >
+                            Copy error
+                          </button>
+                        </div>
+                      </details>
+                    ) : (
+                      entry.message
+                    )}
+                  </div>
                 ),
               )}
               {showAllLogEntries && agentLog.length > 50 && (

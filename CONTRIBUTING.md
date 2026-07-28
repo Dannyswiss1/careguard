@@ -75,6 +75,23 @@ The [dependabot-automerge workflow](.github/workflows/dependabot-automerge.yml) 
 - Auto-squash-merges patch and minor updates
 - Adds a comment and labels on major updates, blocking auto-merge
 
+## Release Process
+
+For information on versioning, deprecations, hotfixes, and rollbacks, see:
+
+- [Versioning Guidelines](docs/release/versioning.md) — SemVer rules for breaking/minor/patch releases
+- [Deprecation Policy](docs/release/deprecation-policy.md) — How to safely deprecate APIs and env vars
+- [Hotfix Process](docs/release/hotfix-process.md) — Emergency patch release workflow
+- [Rollback Procedure](docs/release/rollback.md) — How to revert a bad release
+
+## Architecture Decisions
+
+Significant architectural decisions are documented as ADRs in
+[docs/adr/README.md](docs/adr/README.md). Before making a major
+change, check whether a prior ADR covers the topic. If no existing
+ADR addresses the decision, propose one using the template in the
+ADR index.
+
 ## Security
 
 - Never commit secrets or `.env` files — they are gitignored
@@ -87,64 +104,28 @@ The [dependabot-automerge workflow](.github/workflows/dependabot-automerge.yml) 
 - ESLint + Prettier (run `npm run lint` before pushing)
 - Keep services self-contained; shared code goes in `shared/`
 
-## Changelog Guidelines
+## API Changes
 
-`CHANGELOG.md` is **auto-generated** — do not edit it by hand. The [release workflow](../.github/workflows/release.yml) runs [release-drafter](https://github.com/release-drafter/release-drafter) on every `v*` tag push, then [changelog-updater-action](https://github.com/stefanzweifel/changelog-updater-action) commits the result to `CHANGELOG.md` on `main`.
+HTTP endpoints are described by [`docs/openapi.yml`](docs/openapi.yml), rendered
+at `/docs` on the running server (<http://localhost:3000/docs> locally). The spec
+is **generated** — never edit the YAML by hand:
 
-### How entries are generated
+1. Change the endpoint definition in [`scripts/gen-openapi.ts`](scripts/gen-openapi.ts)
+2. Run `npm run gen-openapi` and commit the regenerated `docs/openapi.yml`
+3. Run `npm run validate:openapi` — CI runs the same check plus a full OpenAPI
+   3.1 lint, and fails on a malformed or out-of-date spec
 
-1. The release-drafter scans merged PRs since the previous tag.
-2. It groups them by the **label** on the PR into changelog categories (see below).
-3. Each entry is formatted as:  
-   `- <PR title> @<author> (#<number>)`
-4. The resulting release notes are committed to `CHANGELOG.md` automatically.
+See [`docs/api/README.md`](docs/api/README.md) for how the docs are hosted, how
+CI validates the spec, and how the x402 `X-PAYMENT` auth scheme behaves.
 
-Because the generator uses PR **titles** and **labels**, writing good PR titles and applying the correct label are the only two things contributors need to do.
+## Observability
 
-### PR title conventions
-
-- Use the imperative mood: "Add X", "Fix Y", "Remove Z".
-- Keep titles concise (≤ 72 characters) — they appear verbatim in the changelog.
-- For breaking changes, prefix the title with `[BREAKING]`:  
-  `[BREAKING] Remove deprecated /v1/agent endpoint`
-- Do not include issue numbers in the title — the PR link is enough.
-
-### Changelog categories and label mapping
-
-| Changelog category | PR label(s) | When to use |
-|--------------------|-------------|-------------|
-| 🚀 Features | `feat`, `feature` | New user-facing functionality |
-| 🐛 Bug Fixes | `fix`, `bugfix` | Defect corrections |
-| 🔒 Security | `security` | Vulnerability fixes, auth/secret changes |
-| 📦 Maintenance | `chore`, `deps`, `dependencies` | Refactors, dependency bumps, CI changes |
-| 📚 Documentation | `docs`, `documentation` | Docs-only changes (no code change) |
-
-Apply exactly **one** category label per PR. If a PR touches multiple categories, use the highest-impact one (Security > Features > Bug Fixes > Maintenance > Documentation).
-
-### Breaking-change markers
-
-To trigger a **MAJOR** version bump (per the `version-resolver` in `release-drafter.yml`):
-
-- Apply the `major` or `breaking-change` label to the PR.
-- Prefix the PR title with `[BREAKING]`.
-- Describe the migration path in the PR body.
-
-Minor bumps are triggered by the `feat` / `feature` label. All other labels produce a patch bump.
-
-### Excluding a PR from the changelog
-
-Some PRs should not appear in user-facing release notes (e.g. internal tooling, test-only changes):
-
-- Apply the `chore` label — these are grouped under 📦 Maintenance, which is the least prominent category.
-- If the PR should be **completely invisible** in release notes (no current mechanism in release-drafter to fully suppress a category), open a follow-up to configure an `exclude-labels` block in `.github/release-drafter.yml`.
-
-### Cross-references
-
-- [docs/release/versioning.md](docs/release/versioning.md) — version bumping rules and release process
-- [CHANGELOG.md](CHANGELOG.md) — auto-generated change history
-- [.github/release-drafter.yml](.github/release-drafter.yml) — category/label configuration
-
----
+When adding or modifying metrics, follow the conventions in
+[`docs/observability/metrics-naming.md`](docs/observability/metrics-naming.md).
+This document covers naming conventions (prefixes, `_total` suffix, base-unit
+policy), label-cardinality rules, and includes a checklist for new metrics.
+Every new metric must also be added to
+[`docs/observability/metrics-catalog.md`](docs/observability/metrics-catalog.md).
 
 ## Smart Contract Guidelines (Stellar/Soroban)
 

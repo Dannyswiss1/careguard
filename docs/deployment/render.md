@@ -53,23 +53,6 @@ node dist/server.js             # starts the server from compiled output
 | Start command | `node dist/server.js` | `node --import tsx server.ts` |
 | Flags needed | None | None (tsx runtime) |
 
-## Pre-Deploy Checklist
+---
 
-Before routing live traffic to a Render deployment, work through the gates in
-[`docs/release/production-readiness.md`](../release/production-readiness.md).
-
-Key items specific to Render:
-
-- Set `NODE_ENV=production` as a Render environment variable.
-- Store all secrets (`AGENT_SECRET_KEY`, `OZ_FACILITATOR_API_KEY`, `LLM_API_KEY`, `CAREGIVER_TOKEN`) as **secret environment variables** in the Render dashboard — not plain env vars — so they are not visible in logs or the UI.
-- After deploy, verify `GET /health` returns 200 (Render uses this as the `healthCheckPath` in `render.yaml`).
-- Run `GET /ready` manually after deploy to confirm all dependency checks pass before routing caregiver traffic.
-- For testnet → mainnet cutovers, check the dedicated gates in the production-readiness checklist (Horizon URL, USDC issuer, `MOCK_NETWORK`, agent wallet funding).
-
-See the full pre-deploy checklist: [`docs/release/production-readiness.md`](../release/production-readiness.md).
-
-## Related
-
-- [`docs/release/production-readiness.md`](../release/production-readiness.md) — full go-live checklist
-- [`docs/observability/health-checks.md`](../observability/health-checks.md) — `/health` and `/ready` response schemas
-- [`docs/sla.md`](../../docs/sla.md) — uptime targets and maintenance-window policy
+For a deployment topology diagram showing how the Render service relates to Redis, external dependencies, and the Docker Compose stack, see [topology.md](topology.md).

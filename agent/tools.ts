@@ -223,6 +223,22 @@ export function extractX402TxHash(
   return TX_HASH_EXTRACTION_FAILED;
 }
 
+/**
+ * Read a Stellar transaction result code from a Horizon error.
+ *
+ * Horizon reports failures as `extras.result_codes.transaction` on a 400
+ * response; only some SDK/network paths surface the code in `err.message`.
+ * Matching on the message alone missed every real Horizon rejection (issue #796),
+ * so both are checked.
+ */
+function getTxResultCode(err: any): string {
+  return err?.response?.data?.extras?.result_codes?.transaction ?? "";
+}
+
+function isTxResultCode(err: any, code: string): boolean {
+  return getTxResultCode(err) === code || String(err?.message ?? "").includes(code);
+}
+
 // Helper: submitTransaction with timeout and retry
 export async function submitTransactionWithRetry(
   server: Horizon.Server,
@@ -243,11 +259,22 @@ export async function submitTransactionWithRetry(
       return result;
     } catch (err: any) {
       lastError = err;
-      if (err?.response?.status) throw err;
-      const msg = err?.message ?? "";
+
+      const isBadSeq = isTxResultCode(err, "tx_bad_seq");
+      const isTooLate = isTxResultCode(err, "tx_too_late");
+      const isTooEarly = isTxResultCode(err, "tx_too_early");
+
+      // Horizon errors carry an HTTP status; only the sequence/timebound codes
+      // below are recoverable, everything else propagates untouched.
+      if (err?.response?.status && !isBadSeq && !isTooLate && !isTooEarly) throw err;
+
+      // tx_too_early: the transaction is not yet valid. Rebuilding cannot help —
+      // a fresh envelope has the same lower timebound — so surface it distinctly
+      // rather than burning retries or reloading the account.
+      if (isTooEarly) throw err;
 
       // tx_bad_seq: sequence number mismatch — reload account and rebuild with 1 s backoff
-      if (msg.includes("tx_bad_seq") && rebuildTx) {
+      if (isBadSeq && rebuildTx) {
         for (let seqRetry = 0; seqRetry < 3; seqRetry++) {
           if (deadlineAt !== undefined && clock.now() >= deadlineAt) {
             throw new RetryBudgetExceededError(FEE_BUMP_BUDGET_MS);
@@ -271,19 +298,22 @@ export async function submitTransactionWithRetry(
             return result;
           } catch (retryErr: any) {
             lastError = retryErr;
-            if (!retryErr?.message?.includes("tx_bad_seq")) throw retryErr;
+            if (!isTxResultCode(retryErr, "tx_bad_seq")) throw retryErr;
           }
         }
         throw lastError;
       }
 
       // tx_too_late: timebounds expired — retry once with fresh timebounds if rebuild fn provided
-      if (msg.includes("tx_too_late") && rebuildTx && attempt < maxRetries) {
+      if (isTooLate && rebuildTx && attempt < maxRetries) {
         logger.warn({ attempt: attempt + 1 }, "[Stellar] tx_too_late, rebuilding with fresh timebounds");
         tx = await rebuildTx();
         continue;
       }
-      if (msg.includes("tx_bad_seq") || msg.includes("tx_too_early") || msg.includes("tx_too_late")) throw err;
+      // A sequence/timebound failure with no way to recover (no rebuild fn, or
+      // retries exhausted) is terminal — never fall through to the generic
+      // backoff, which would resubmit the same doomed envelope.
+      if (isBadSeq || isTooEarly || isTooLate) throw err;
       if (attempt < maxRetries) {
         const delay = Math.pow(2, attempt) * 500;
         if (deadlineAt !== undefined && clock.now() + delay >= deadlineAt) {
@@ -301,7 +331,15 @@ export async function submitTransactionWithRetry(
 }
 
 // Helper: submit transaction with automatic fee bump on insufficient_fee error.
-// Wraps retries in fee-bump envelopes, doubling the fee each time (up to 3x max).
+//
+// Attempt 1 submits a plain transaction at the recommended fee. Each
+// tx_insufficient_fee doubles the fee (capped at MAX_FEE_STROOPS) and resubmits
+// the transaction wrapped in a fee-bump envelope, for at most FEE_BUMP_MAX_ATTEMPTS
+// submissions in total. When the last allowed attempt still fails, that failure
+// is surfaced — the loop never retries indefinitely. Non-fee errors are never
+// wrapped and propagate on the spot.
+export const FEE_BUMP_MAX_ATTEMPTS = 3;
+
 export async function submitTransactionWithFeeBump(
   server: Horizon.Server,
   account: any,
@@ -312,87 +350,75 @@ export async function submitTransactionWithFeeBump(
 ): Promise<{ hash: string; fee: string }> {
   let currentFee = initialFee || await getRecommendedFee();
   let attempt = 0;
-  const maxAttempts = 3; // up to 3 fee bumps
   const deadlineAt = clock.now() + FEE_BUMP_BUDGET_MS;
 
-  while (attempt < maxAttempts) {
+  const buildInner = (source: any) => {
+    const builder = new TransactionBuilder(source, {
+      fee: currentFee,
+      networkPassphrase: STELLAR_NETWORK_PASSPHRASE,
+    });
+    for (const op of operations) {
+      builder.addOperation(op);
+    }
+    const built = builder.setTimeout(30).build();
+    built.sign(signer);
+    return built;
+  };
+
+  while (attempt < FEE_BUMP_MAX_ATTEMPTS) {
     if (clock.now() >= deadlineAt) {
       throw new RetryBudgetExceededError(FEE_BUMP_BUDGET_MS);
     }
+
+    const isFeeBumpAttempt = attempt > 0;
+
     try {
-      const tx = new TransactionBuilder(account, {
-        fee: currentFee,
-        networkPassphrase: STELLAR_NETWORK_PASSPHRASE,
-      });
+      const innerTx = buildInner(account);
 
-      for (const op of operations) {
-        tx.addOperation(op);
-      }
-
-      const builtTx = tx.setTimeout(30).build();
-      builtTx.sign(signer);
-
-      const result = await submitTransactionWithRetry(server, builtTx, 2, 35000, async () => {
-        const freshAccount = await server.loadAccount(signer.publicKey());
-        const newTx = new TransactionBuilder(freshAccount, {
-          fee: currentFee,
-          networkPassphrase: STELLAR_NETWORK_PASSPHRASE,
-        });
-        for (const op of operations) {
-          newTx.addOperation(op);
-        }
-        const rebuilt = newTx.setTimeout(30).build();
-        rebuilt.sign(signer);
-        return rebuilt;
-      }, deadlineAt, clock);
-      return { hash: result.hash, fee: currentFee };
-    } catch (err: any) {
-      if (err instanceof RetryBudgetExceededError) throw err;
-      const resultCodes = err?.response?.data?.extras?.result_codes;
-      const isFeeError = resultCodes?.transaction === 'tx_insufficient_fee';
-
-      if (isFeeError && clock.now() >= deadlineAt) {
-        throw new RetryBudgetExceededError(FEE_BUMP_BUDGET_MS);
-      }
-
-      if (isFeeError && attempt < maxAttempts - 1) {
-        // Double the fee and wrap in a fee-bump envelope
-        const newFee = Math.min(parseInt(currentFee) * 2, MAX_FEE_STROOPS);
-        logger.warn(
-          { oldFee: currentFee, newFee, attempt: attempt + 1 },
-          '[Stellar] Insufficient fee, wrapping in fee-bump envelope',
-        );
-        currentFee = newFee.toString();
-        stellarFeeBumpsTotal.inc();
-        attempt++;
-
-        // Build the inner transaction with the new fee
-        const innerTx = new TransactionBuilder(account, {
-          fee: currentFee,
-          networkPassphrase: STELLAR_NETWORK_PASSPHRASE,
-        });
-        for (const op of operations) {
-          innerTx.addOperation(op);
-        }
-        const builtInner = innerTx.setTimeout(30).build();
-        builtInner.sign(signer);
-
-        // Wrap in fee-bump envelope: feeSource is the agent wallet itself
-        const feeBumpTx = TransactionBuilder.buildFeeBumpTransaction(
-          signer,
-          currentFee,
-          builtInner,
-          STELLAR_NETWORK_PASSPHRASE,
-        );
-        feeBumpTx.sign(signer);
-
-        const result = await submitTransactionWithRetry(
-          server, feeBumpTx as any, 2, 35000, undefined, deadlineAt, clock,
-        );
+      if (!isFeeBumpAttempt) {
+        // First attempt: a plain envelope, rebuildable on a sequence collision.
+        const result = await submitTransactionWithRetry(server, innerTx, 2, 35000, async () => {
+          const freshAccount = await server.loadAccount(signer.publicKey());
+          return buildInner(freshAccount);
+        }, deadlineAt, clock);
         return { hash: result.hash, fee: currentFee };
       }
 
-      throw err;
+      // Fee-bump attempt: the inner transaction keeps its own signature and the
+      // agent keypair signs the envelope as fee source. A fee-bump envelope
+      // cannot be rebuilt mid-flight, so no rebuild fn is passed.
+      const feeBumpTx = TransactionBuilder.buildFeeBumpTransaction(
+        signer,
+        currentFee,
+        innerTx,
+        STELLAR_NETWORK_PASSPHRASE,
+      );
+      feeBumpTx.sign(signer);
+
+      const result = await submitTransactionWithRetry(
+        server, feeBumpTx as any, 2, 35000, undefined, deadlineAt, clock,
+      );
+      return { hash: result.hash, fee: currentFee };
+    } catch (err: any) {
+      if (err instanceof RetryBudgetExceededError) throw err;
+
+      // Only an insufficient fee is worth bumping; anything else (tx_bad_auth,
+      // tx_bad_seq that already exhausted its own retries, …) propagates.
+      if (!isTxResultCode(err, "tx_insufficient_fee")) throw err;
+
+      attempt++;
+      if (attempt >= FEE_BUMP_MAX_ATTEMPTS) throw err;
+      if (clock.now() >= deadlineAt) {
+        throw new RetryBudgetExceededError(FEE_BUMP_BUDGET_MS);
+      }
+
+      const newFee = Math.min(parseInt(currentFee, 10) * 2, MAX_FEE_STROOPS);
+      logger.warn(
+        { oldFee: currentFee, newFee, attempt },
+        '[Stellar] Insufficient fee, wrapping in fee-bump envelope',
+      );
+      currentFee = newFee.toString();
+      stellarFeeBumpsTotal.inc();
     }
   }
 
@@ -1195,6 +1221,8 @@ export async function comparePharmacyPrices(
       drug: drugName,
       dosage,
       zipCode,
+      usedZipCode: zipCode === '10001' || zipCode === '33101' ? zipCode : '90210',
+      isFallbackZip: zipCode !== '90210' && zipCode !== '10001' && zipCode !== '33101',
       protocol: {
         name: 'x402',
         mockNetwork: true,

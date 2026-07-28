@@ -1,5 +1,7 @@
 # CareGuard
 
+[![CI](https://github.com/harystyleseze/careguard/actions/workflows/ci.yml/badge.svg)](https://github.com/harystyleseze/careguard/actions/workflows/ci.yml)
+
 **An autonomous AI agent that manages elderly healthcare spending on Stellar.**
 
 Compares medication prices across pharmacies, audits medical bills for errors, checks drug interactions, and executes real USDC payments — all within caregiver-controlled spending policies. Every transaction settles on Stellar testnet via x402 and MPP.
@@ -44,6 +46,8 @@ Every payment is a real Stellar testnet transaction verifiable on [stellar.exper
 ## Architecture
 
 For a full runtime flow diagram, module map, and integration details, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+For deployment topology (Docker Compose and Render), see [docs/deployment/topology.md](docs/deployment/topology.md).
 
 
 ```
@@ -165,6 +169,21 @@ See [docs/observability/health-checks.md](docs/observability/health-checks.md) f
 
 ---
 
+## API Documentation
+
+The OpenAPI 3.1 spec is rendered as an interactive reference by the unified server:
+
+| What | Local | Production |
+|------|-------|------------|
+| Interactive reference | <http://localhost:3000/docs> | <https://api.careguard.xyz/docs> |
+| Raw spec | <http://localhost:3000/openapi.yml> | <https://api.careguard.xyz/openapi.yml> |
+
+The spec is generated (`npm run gen-openapi`), never hand-edited, and validated in
+CI (`npm run validate:openapi`). See [docs/api/README.md](docs/api/README.md) for the
+hosting setup, CI validation, and how the x402 `X-PAYMENT` auth scheme works.
+
+---
+
 ## Running Tests
 
 ```bash
@@ -187,6 +206,8 @@ Tests are organized in two workspaces:
 - **Dashboard workspace** – frontend tests for `dashboard/src/` (jsdom environment via `dashboard/vitest.config.ts`)
 
 Shared test helpers (environment scrubber, fetch mock, Horizon mock) live in `tests/setup.ts`.
+
+> **Branch protection:** The `main` branch requires the CI check (`ci`) to pass before merging. Ensure all typecheck, lint, and test steps are green on your PR.
 
 ---
 
@@ -227,6 +248,8 @@ From real end-to-end test on Stellar testnet:
 | Stellar transactions | All verifiable on [stellar.expert](https://stellar.expert/explorer/testnet) |
 
 **Cost breakdown:** 10 price queries @ $0.002 = $0.02, 1 drug interaction check @ $0.001 = $0.001, 1 bill audit @ $0.01 = $0.01. Total: $0.030 in autonomous AI agent operational costs.
+
+For detailed cost analysis, per-operation breakdown, and cost estimation worksheets, see [Cost Estimation Guide](docs/cost-estimation.md).
 
 ---
 
