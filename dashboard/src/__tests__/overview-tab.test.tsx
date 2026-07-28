@@ -123,4 +123,17 @@ describe("OverviewTab Component", () => {
       "bill"
     );
   });
+
+  it("renders Spanish translations when locale is set to 'es' (Issue #1126)", () => {
+    render(<OverviewTab {...mockProps} locale="es" />);
+    expect(screen.getByText("Gasto Mensual")).toBeInTheDocument();
+    expect(screen.getByText("Ahorros Encontrados")).toBeInTheDocument();
+    expect(screen.getByText("Errores de Facturación")).toBeInTheDocument();
+    expect(screen.getByText("Costos de API del Agente")).toBeInTheDocument();
+    expect(screen.getByText("Estado del Presupuesto")).toBeInTheDocument();
+    expect(screen.getByText("Acciones del Agente")).toBeInTheDocument();
+    expect(screen.getByText("Comparar Precios de Medicamentos")).toBeInTheDocument();
+    expect(screen.getByText("Auditar Factura Hospitalaria")).toBeInTheDocument();
+    expect(screen.getByText("Intentar Pago Excedente")).toBeInTheDocument();
+  });
 });
