@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
+import { toast } from "sonner";
 import { downloadBillAuditPDF, downloadDisputeLetterPDF, downloadDisputeLetterEmail } from "../../app/pdf";
 import {
   BillAuditResultSchema,
@@ -80,12 +81,16 @@ export function BillsTab({ agentResult, recipient }: BillsTabProps) {
               </h2>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() =>
-                    downloadBillAuditPDF(BillAuditResultSchema.parse(t.result), {
-                      errorsOnly: showErrorsOnly,
-                      recipient,
-                    })
-                  }
+                  onClick={() => {
+                    try {
+                      downloadBillAuditPDF(BillAuditResultSchema.parse(t.result), {
+                        errorsOnly: showErrorsOnly,
+                        recipient,
+                      });
+                    } catch {
+                      toast.error("Couldn't parse bill audit result — try again");
+                    }
+                  }}
                   className="px-3 py-1.5 bg-sky-50 text-sky-700 rounded-lg text-xs font-medium hover:bg-sky-100 active:bg-sky-200 cursor-pointer transition-all"
                 >
                   Download PDF
