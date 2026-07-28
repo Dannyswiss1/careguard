@@ -12,10 +12,6 @@
     "pause": "Pausar",
     "resume": "Reanudar"
   },
-  "wallet": {
-    "agentWallet": "Billetera del Agente (USDC)",
-    "careRecipient": "Paciente"
-  },
   "tabs": {
     "overview": "Resumen",
     "medications": "Medicamentos",
@@ -75,12 +71,13 @@
   },
   "policy": {
     "title": "Política de Gastos para Rosa",
-    "description": "Estos límites son implementados por contratos inteligente en Stellar. El agente no puede excederlos.",
+    "description": "Estos límites son implementados por el agente CareGuard en el servidor antes de cada pago.",
     "dailyLimit": "Límite Diario ($)",
     "monthlyLimit": "Límite Mensual ($)",
     "medicationBudget": "Presupuesto Mensual Medicamentos ($)",
     "billBudget": "Presupuesto Mensual Facturas ($)",
     "approvalThreshold": "Umbral de Aprobación del Cuidador ($)",
+    "holdTime": "Tiempo de Espera Antes de Aprobación Automática (segundos)",
     "refresh": "Actualizar del servidor",
     "discard": "Descartar cambios",
     "updatePolicy": "Actualizar Política",
@@ -102,6 +99,8 @@
   "wallet": {
     "title": "Billetera del Agente",
     "description": "Esta es la billetera Stellar del agente IA. Contiene USDC para pagar farmacias, facturas médicas y consultas de API. Todos los saldos están en Stellar testnet.",
+    "agentWallet": "Billetera del Agente (USDC)",
+    "careRecipient": "Paciente",
     "usdcBalance": "Saldo USDC",
     "xlmBalance": "Saldo XLM",
     "walletAddress": "Dirección de Billetera",
