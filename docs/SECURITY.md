@@ -140,7 +140,7 @@ If a future feature genuinely needs client-side persistence (e.g. a non-sensitiv
 
 ## Secret Rotation
 
-See `docs/runbooks/rotate-secrets.md` for step-by-step rotation procedures for every secret (agent wallet, OZ API key, LLM key, MPP key, JWT).
+See `docs/runbooks/rotate-secrets.md` for step-by-step rotation procedures for every secret (agent wallet, OZ API key, LLM key, MPP key, JWT). See [`docs/security/rotation-sla.md`](security/rotation-sla.md) for how often each secret must rotate, the emergency response time after a suspected leak, and who is responsible.
 
 ---
 
