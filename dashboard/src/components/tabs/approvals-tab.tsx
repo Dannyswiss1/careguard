@@ -6,13 +6,17 @@ import { Card } from "../primitives/card";
 import type { Transaction } from "../types";
 import { AGENT_URL } from "../../lib/agent-url";
 import { agentFetch } from "../../lib/agent-fetch";
+import { formatDateTime, type Locale } from "../../i18n";
 
 
 export interface ApprovalsTabProps {
   agentConnected: boolean;
+  // #1139 — defaults to "en" so existing callers that don't pass a locale
+  // render identically to before this change.
+  locale?: Locale;
 }
 
-export function ApprovalsTab({ agentConnected }: ApprovalsTabProps) {
+export function ApprovalsTab({ agentConnected, locale = "en" }: ApprovalsTabProps) {
   const [approvals, setApprovals] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(false);
   const [, setTick] = useState(0);
@@ -99,7 +103,7 @@ export function ApprovalsTab({ agentConnected }: ApprovalsTabProps) {
                       Amount: ${tx.amount.toFixed(2)} | Category: {tx.category}
                     </div>
                     <div className="text-xs text-slate-400 mt-1">
-                      {new Date(tx.timestamp).toLocaleString()}
+                      {formatDateTime(new Date(tx.timestamp), locale)}
                     </div>
                     {tx.pendingUntil && (
                       <div className="text-xs text-amber-600 mt-1">

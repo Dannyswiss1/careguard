@@ -18,6 +18,83 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const docsDir = path.resolve(__dirname, "../docs");
 
+// Kept in sync with the registry in docs/error-codes.md — that file is the
+// source of truth for meaning/remediation; this enum is what clients can
+// validate against in the spec itself.
+const ERROR_CODES = [
+  "VALIDATION_MISSING_FIELD",
+  "VALIDATION_INVALID_INPUT",
+  "VALIDATION_INSUFFICIENT_SCORE",
+  "AUTH_TOKEN_MISSING",
+  "AUTH_TOKEN_EXPIRED",
+  "AUTH_TOKEN_INVALID",
+  "AUTH_ADMIN_REQUIRED",
+  "NOT_FOUND_DRUG",
+  "NOT_FOUND_PHARMACY",
+  "NOT_FOUND_AGENT",
+  "BODY_TOO_LARGE",
+  "POLICY_DAILY_LIMIT",
+  "POLICY_MONTHLY_LIMIT",
+  "POLICY_APPROVAL_REQUIRED",
+  "POLICY_CATEGORY_BLOCKED",
+  "PAYMENT_INSUFFICIENT_FUNDS",
+  "PAYMENT_TX_FAILED",
+  "PAYMENT_TX_TIMEOUT",
+  "RATE_LIMIT_EXCEEDED",
+  "UPSTREAM_HORIZON_DOWN",
+  "UPSTREAM_LLM_DOWN",
+  "UPSTREAM_FACILITATOR_DOWN",
+  "UPSTREAM_FACILITATOR_ERROR",
+  "UPSTREAM_TIMEOUT",
+  "SERVER_DEGRADED",
+  "SERVER_INTERNAL_ERROR",
+] as const;
+
+/** Standard 4xx/5xx response referencing the shared Error schema. */
+function errorResponse(description: string) {
+  return {
+    description,
+    content: {
+      "application/json": {
+        schema: { $ref: "#/components/schemas/Error" },
+      },
+    },
+  };
+}
+
+/** 402 challenge response for x402-protected routes. */
+function paymentRequiredResponse() {
+  return {
+    description:
+      "Payment required. Response is an x402 payment challenge (not the shared Error schema): " +
+      "the body describes accepted payment schemes/amounts and an X-PAYMENT-related header " +
+      "identifies the facilitator. Retry the request with an X-PAYMENT header containing a " +
+      "valid payment proof for one of the accepted schemes.",
+    content: {
+      "application/json": {
+        schema: { $ref: "#/components/schemas/X402PaymentChallenge" },
+      },
+    },
+  };
+}
+
+/** 413 response for routes with an explicit body-size limit. */
+function bodyTooLargeResponse() {
+  return errorResponse(
+    "Request body exceeds the configured size limit. `code` is BODY_TOO_LARGE; `details.limit` " +
+      "reports the configured maximum in bytes.",
+  );
+}
+
+const RATE_LIMIT_RESPONSE = errorResponse(
+  "Too many requests for this route's rate-limit policy. `code` is RATE_LIMIT_EXCEEDED; " +
+    "back off and retry after the `Retry-After` header.",
+);
+
+const SERVER_ERROR_RESPONSE = errorResponse(
+  "Unhandled server error. `code` is SERVER_INTERNAL_ERROR.",
+);
+
 interface OpenAPIInfo {
   title: string;
   version: string;
@@ -132,6 +209,26 @@ export function generateSpec(): OpenAPISpec {
             details: {
               type: "object",
               description: "Structured metadata or field-level details specific to the error code.",
+            },
+          },
+          required: ["error", "code"],
+        },
+        X402PaymentChallenge: {
+          type: "object",
+          description:
+            "x402 payment challenge returned on 402 responses from paid routes. Shape is defined by " +
+            "the x402 protocol (see docs/setup/x402.md), not the shared Error schema — clients must " +
+            "branch on HTTP status 402, not on a `code` field, to detect this response.",
+          properties: {
+            x402Version: { type: "integer" },
+            accepts: {
+              type: "array",
+              description: "Accepted payment schemes, assets, and amounts for this route.",
+              items: { type: "object" },
+            },
+            error: {
+              type: "string",
+              description: "Human-readable reason payment is required or was rejected.",
             },
           },
         },
@@ -281,6 +378,8 @@ export function generateSpec(): OpenAPISpec {
             "401": { $ref: "#/components/responses/UnauthorizedError" },
             "403": { $ref: "#/components/responses/ForbiddenError" },
             "500": { $ref: "#/components/responses/InternalServerError" },
+            "429": RATE_LIMIT_RESPONSE,
+            "500": SERVER_ERROR_RESPONSE,
           },
         },
       },
@@ -327,12 +426,13 @@ export function generateSpec(): OpenAPISpec {
             "200": {
               description: "Pharmacy query results",
             },
-            "400": {
-              $ref: "#/components/responses/BadRequestError",
-            },
-            "402": {
-              $ref: "#/components/responses/PaymentRequiredError",
-            },
+            "400": errorResponse(
+              "Invalid request. `code` is one of VALIDATION_MISSING_FIELD, VALIDATION_INVALID_INPUT.",
+            ),
+            "402": paymentRequiredResponse(),
+            "404": errorResponse("Drug or pharmacy not found. `code` is NOT_FOUND_DRUG or NOT_FOUND_PHARMACY."),
+            "429": RATE_LIMIT_RESPONSE,
+            "500": SERVER_ERROR_RESPONSE,
           },
         },
       },
@@ -381,6 +481,12 @@ export function generateSpec(): OpenAPISpec {
             "403": {
               $ref: "#/components/responses/ForbiddenError",
             },
+            "400": errorResponse(
+              "Validation error. `code` is one of VALIDATION_MISSING_FIELD, VALIDATION_INVALID_INPUT.",
+            ),
+            "401": errorResponse("Missing admin token. `code` is AUTH_TOKEN_MISSING."),
+            "403": errorResponse("Admin token invalid or insufficient. `code` is AUTH_TOKEN_INVALID or AUTH_ADMIN_REQUIRED."),
+            "500": SERVER_ERROR_RESPONSE,
           },
         },
       },
@@ -437,7 +543,22 @@ export function generateSpec(): OpenAPISpec {
             },
             "402": {
               $ref: "#/components/responses/PaymentRequiredError",
+              description: "Validation error. `code` is one of VALIDATION_MISSING_FIELD, VALIDATION_INVALID_INPUT.",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      errors: { type: "array" },
+                    },
+                  },
+                },
+              },
             },
+            "402": paymentRequiredResponse(),
+            "413": bodyTooLargeResponse(),
+            "429": RATE_LIMIT_RESPONSE,
+            "500": SERVER_ERROR_RESPONSE,
           },
         },
       },
@@ -470,6 +591,12 @@ export function generateSpec(): OpenAPISpec {
             "402": {
               $ref: "#/components/responses/PaymentRequiredError",
             },
+            "400": errorResponse(
+              "Validation error. `code` is one of VALIDATION_MISSING_FIELD, VALIDATION_INVALID_INPUT, VALIDATION_INSUFFICIENT_SCORE.",
+            ),
+            "402": paymentRequiredResponse(),
+            "429": RATE_LIMIT_RESPONSE,
+            "500": SERVER_ERROR_RESPONSE,
           },
         },
       },
@@ -516,6 +643,17 @@ export function generateSpec(): OpenAPISpec {
             "402": {
               $ref: "#/components/responses/PaymentRequiredError",
             },
+            "400": errorResponse(
+              "Validation error. `code` is one of VALIDATION_MISSING_FIELD, VALIDATION_INVALID_INPUT.",
+            ),
+            "402": paymentRequiredResponse(),
+            "429": RATE_LIMIT_RESPONSE,
+            "500": errorResponse(
+              "Order or payment processing failed. `code` is one of SERVER_INTERNAL_ERROR, PAYMENT_TX_FAILED.",
+            ),
+            "502": errorResponse(
+              "Stellar transaction timed out or an upstream dependency is unreachable. `code` is one of PAYMENT_TX_TIMEOUT, UPSTREAM_HORIZON_DOWN, UPSTREAM_FACILITATOR_DOWN, UPSTREAM_FACILITATOR_ERROR.",
+            ),
           },
         },
       },
