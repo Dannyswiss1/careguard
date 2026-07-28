@@ -8,6 +8,7 @@ import type { AgentResult, AgentLlmError, SpendingData } from "../types";
 import type { RecipientProfile } from "../../lib/types";
 import { agentFetch } from "../../lib/agent-fetch";
 import { formatCurrency, getTranslations, type Locale } from "../../i18n";
+import { formatCurrency, formatDate, formatNumber, getTranslations, type Locale } from "../../i18n";
 
 export interface OverviewTabProps {
   spending: SpendingData | null;
@@ -39,6 +40,7 @@ export function OverviewTab({
   locale = "en",
 }: OverviewTabProps) {
   const t = getTranslations(locale);
+
   const savings = agentResult
     ? agentResult.toolCalls
       .filter((t) => t.tool === "compare_pharmacy_prices")
@@ -50,6 +52,10 @@ export function OverviewTab({
         (t) => t.tool === "audit_medical_bill" || t.tool === "fetch_and_audit_bill",
       )
       .reduce((s, t) => s + (t.result?.totalOvercharge || 0), 0)
+        .filter(
+          (t) => t.tool === "audit_medical_bill" || t.tool === "fetch_and_audit_bill",
+        )
+        .reduce((s, t) => s + (t.result?.totalOvercharge || 0), 0)
     : 0;
 
   const llmTokens = agentResult?.llmUsage
@@ -67,7 +73,7 @@ export function OverviewTab({
       tabIndex={0}
       className="space-y-6"
     >
-      <AdherencePrompt />
+      <AdherencePrompt locale={locale} />
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <Card
@@ -92,11 +98,12 @@ export function OverviewTab({
           label={t.overview.agentApiCosts}
           value={formatCurrency(spending?.spending.serviceFees ?? 0, locale, 4)}
           sub={`${spending?.transactionCount || 0} ${t.overview.queries}`}
+          sub={`${spending?.transactionCount ? formatNumber(spending.transactionCount, locale) : 0} ${t.overview.queries}`}
           color="slate"
         />
         <Card
           label="LLM Tokens"
-          value={agentResult ? `${llmTokens} tokens` : "0 tokens"}
+          value={agentResult ? `${formatNumber(llmTokens, locale)} tokens` : "0 tokens"}
           sub={`≈ ${formatCurrency(Number(llmCost), locale, 4)} this run`}
           color="sky"
         />
@@ -109,11 +116,13 @@ export function OverviewTab({
             label={t.budget.medications}
             spent={spending?.spending.medications || 0}
             budget={spending?.policy.medicationMonthlyBudget || 300}
+            locale={locale}
           />
           <Bar
             label={t.budget.medicalBills}
             spent={spending?.spending.bills || 0}
             budget={spending?.policy.billMonthlyBudget || 500}
+            locale={locale}
           />
         </div>
       </div>
@@ -236,7 +245,7 @@ function LlmErrorBanner({ error }: { error: AgentLlmError }) {
   );
 }
 
-function AdherencePrompt() {
+function AdherencePrompt({ locale = "en" }: { locale?: Locale }) {
   const [adherence, setAdherence] = useState<{ pending: Array<{ id: string; drug: string; dueDate: string }>; flagged: Array<{ id: string; drug: string }> } | null>(null);
 
   useEffect(() => {
@@ -276,7 +285,7 @@ function AdherencePrompt() {
             <div key={item.id} className="flex items-center justify-between bg-white rounded-lg p-2 border border-amber-100">
               <div>
                 <span className="text-sm font-medium text-slate-700">{item.drug}</span>
-                <span className="text-xs text-slate-400 ml-2">due {new Date(item.dueDate).toLocaleDateString()}</span>
+                <span className="text-xs text-slate-400 ml-2">due {formatDate(item.dueDate, locale)}</span>
               </div>
               <button
                 onClick={() => handleConfirm(item.id)}

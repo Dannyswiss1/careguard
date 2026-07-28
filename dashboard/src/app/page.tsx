@@ -24,6 +24,8 @@ import { ConfigErrorPage } from "../components/config-error-page";
 import { AGENT_URL } from "../lib/agent-url";
 
 
+import { DEFAULT_LOCALE } from "../i18n";
+
 export default function Dashboard() {
   // In production, AGENT_URL is null when NEXT_PUBLIC_API_URL is unset.
   // Show a configuration error page rather than a confusing connection failure
@@ -117,6 +119,7 @@ export default function Dashboard() {
             onCancelTask={state.cancelAgentTask}
             recipient={recipient}
             locale={locale}
+            locale={DEFAULT_LOCALE}
           />
         )}
         {activeTab === "medications" && (
