@@ -2,6 +2,7 @@
 
 import { usePathname, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { isValidLocale, type Locale } from "../i18n";
 import { DashboardFooter } from "../components/dashboard-footer";
 import { DashboardHeader } from "../components/dashboard-header";
 import { DashboardTabsNav } from "../components/dashboard-tabs-nav";
@@ -53,6 +54,8 @@ export default function Dashboard() {
       : "overview";
   }, [searchParams]);
 
+  const localeParam = searchParams.get("locale");
+  const locale: Locale = isValidLocale(localeParam || "") ? localeParam as Locale : "en";
   const state = useAgentState({ activeTab });
 
   const ariaLogRef = useRef<number | null>(null);
@@ -113,18 +116,21 @@ export default function Dashboard() {
             onRunTask={state.runAgentTask}
             onCancelTask={state.cancelAgentTask}
             recipient={recipient}
+            locale={locale}
           />
         )}
         {activeTab === "medications" && (
           <MedicationsTab
             agentResult={state.agentResult}
             recipient={recipient}
+            locale={locale}
           />
         )}
         {activeTab === "bills" && (
           <BillsTab
             agentResult={state.agentResult}
             recipient={recipient}
+            locale={locale}
           />
         )}
         {activeTab === "approvals" && (
@@ -170,6 +176,7 @@ export default function Dashboard() {
             onResetAgent={state.resetAgent}
             loadingTransactions={state.loadingTransactions}
             loadingSpending={state.loadingSpending}
+            locale={locale}
           />
         )}
         {activeTab === "settings" && (
