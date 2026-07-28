@@ -7,6 +7,7 @@ import { Card } from "../primitives/card";
 import type { AgentResult, AgentLlmError, SpendingData } from "../types";
 import type { RecipientProfile } from "../../lib/types";
 import { agentFetch } from "../../lib/agent-fetch";
+import { formatCurrency, getTranslations, type Locale } from "../../i18n";
 import { formatCurrency, formatDate, formatNumber, getTranslations, type Locale } from "../../i18n";
 
 export interface OverviewTabProps {
@@ -18,8 +19,6 @@ export interface OverviewTabProps {
   onRunTask: (task: string, label: string) => void;
   onCancelTask?: () => void;
   recipient?: RecipientProfile;
-  // #1138 — defaults to "en" so existing callers that don't pass a locale
-  // render identically to before this change.
   locale?: Locale;
 }
 
@@ -44,11 +43,15 @@ export function OverviewTab({
 
   const savings = agentResult
     ? agentResult.toolCalls
-        .filter((t) => t.tool === "compare_pharmacy_prices")
-        .reduce((s, t) => s + (t.result?.potentialSavings || 0), 0)
+      .filter((t) => t.tool === "compare_pharmacy_prices")
+      .reduce((s, t) => s + (t.result?.potentialSavings || 0), 0)
     : 0;
   const overcharges = agentResult
     ? agentResult.toolCalls
+      .filter(
+        (t) => t.tool === "audit_medical_bill" || t.tool === "fetch_and_audit_bill",
+      )
+      .reduce((s, t) => s + (t.result?.totalOvercharge || 0), 0)
         .filter(
           (t) => t.tool === "audit_medical_bill" || t.tool === "fetch_and_audit_bill",
         )
@@ -94,6 +97,7 @@ export function OverviewTab({
         <Card
           label={t.overview.agentApiCosts}
           value={formatCurrency(spending?.spending.serviceFees ?? 0, locale, 4)}
+          sub={`${spending?.transactionCount || 0} ${t.overview.queries}`}
           sub={`${spending?.transactionCount ? formatNumber(spending.transactionCount, locale) : 0} ${t.overview.queries}`}
           color="slate"
         />
@@ -248,7 +252,7 @@ function AdherencePrompt({ locale = "en" }: { locale?: Locale }) {
     agentFetch("/agent/adherence/pending?recipient_id=rosa")
       .then((r) => r.json())
       .then((data) => setAdherence(data))
-      .catch(() => {});
+      .catch(() => { });
   }, []);
 
   const handleConfirm = async (recordId: string) => {
@@ -259,7 +263,7 @@ function AdherencePrompt({ locale = "en" }: { locale?: Locale }) {
         body: JSON.stringify({ record_id: recordId }),
       });
       setAdherence((prev) => prev ? { ...prev, pending: prev.pending.filter((p) => p.id !== recordId) } : prev);
-    } catch {}
+    } catch { }
   };
 
   if (!adherence || (adherence.pending.length === 0 && adherence.flagged.length === 0)) return null;

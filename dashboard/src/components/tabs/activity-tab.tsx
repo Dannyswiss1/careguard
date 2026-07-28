@@ -6,7 +6,7 @@ import { copyText } from "../../lib/clipboard";
 import type { RecipientProfile } from "../../lib/types";
 import { ConfirmDialog } from "../primitives/confirm-dialog";
 import { TxLink } from "../primitives/tx-link";
-import { formatTime, type Locale } from "../../i18n";
+import { formatTime, getTranslations, type Locale } from "../../i18n";
 import type {
   AgentLogEntry,
   PaginationData,
@@ -30,8 +30,6 @@ export interface ActivityTabProps {
   onResetAgent: () => void;
   loadingTransactions?: boolean;
   loadingSpending?: boolean;
-  // #1139 — defaults to "en" so existing callers that don't pass a locale
-  // render identically to before this change.
   locale?: Locale;
 }
 
@@ -52,6 +50,7 @@ export function ActivityTab({
 }: ActivityTabProps) {
   const [showAllLogEntries, setShowAllLogEntries] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const t = getTranslations(locale).activity;
 
   // allTransactions arrives pre-sorted newest-first from fetchTransactions (#220).
   // useMemo ensures the merge only reruns when transactions or audit events change,
@@ -96,9 +95,8 @@ export function ActivityTab({
       <ConfirmDialog
         open={confirmOpen}
         title="Reset all agent data?"
-        description={`This will delete ${allTransactions.length} transaction${
-          allTransactions.length === 1 ? "" : "s"
-        }, the agent log, and all audit results. This cannot be undone.`}
+        description={`This will delete ${allTransactions.length} transaction${allTransactions.length === 1 ? "" : "s"
+          }, the agent log, and all audit results. This cannot be undone.`}
         confirmLabel="Delete everything"
         cancelLabel="Cancel"
         destructive
@@ -109,7 +107,7 @@ export function ActivityTab({
         }}
       />
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-slate-700">Transaction Log</h2>
+        <h2 className="text-sm font-semibold text-slate-700">{t.title}</h2>
         <div className="flex items-center gap-3">
           {allTransactions.length > 0 && (
             <button
@@ -118,7 +116,7 @@ export function ActivityTab({
               }
               className="px-3 py-1.5 bg-sky-50 text-sky-700 rounded-lg text-xs font-medium hover:bg-sky-100 active:bg-sky-200 cursor-pointer transition-all"
             >
-              Download Report
+              {t.downloadReport}
             </button>
           )}
           <button
@@ -131,7 +129,7 @@ export function ActivityTab({
             onClick={() => setConfirmOpen(true)}
             className="text-xs text-red-500 hover:text-red-700 hover:underline active:text-red-800 cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-red-500 rounded px-1"
           >
-            Reset All
+            {t.reset}
           </button>
         </div>
       </div>
@@ -141,7 +139,7 @@ export function ActivityTab({
       >
         <div aria-hidden="true">
           {agentLog.length === 0 ? (
-            <span className="text-slate-500">No agent activity yet...</span>
+            <span className="text-slate-500">{t.noActivity}</span>
           ) : (
             <>
               {!showAllLogEntries && agentLog.length > 50 && (
@@ -213,7 +211,7 @@ export function ActivityTab({
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
         {mergedTimeline.length === 0 && !pagination ? (
           <div className="p-8 text-center text-sm text-slate-400">
-            No activity yet
+            {t.noTransactions}
           </div>
         ) : (
           <>
@@ -273,22 +271,22 @@ export function ActivityTab({
                 <thead className="bg-slate-50 border-b border-slate-200">
                   <tr>
                     <th className="hidden md:table-cell text-left px-4 py-2 text-xs font-medium text-slate-500">
-                      Time
+                      {t.time}
                     </th>
                     <th className="text-left px-4 py-2 text-xs font-medium text-slate-500">
-                      Type
+                      {t.type}
                     </th>
                     <th className="text-left px-4 py-2 text-xs font-medium text-slate-500">
-                      Description
+                      {t.description}
                     </th>
                     <th className="text-right px-4 py-2 text-xs font-medium text-slate-500">
-                      Amount
+                      {t.amount}
                     </th>
                     <th className="text-right px-4 py-2 text-xs font-medium text-slate-500">
-                      Status
+                      {t.status}
                     </th>
                     <th className="text-right px-4 py-2 text-xs font-medium text-slate-500">
-                      Stellar Tx
+                      {t.stellarTx}
                     </th>
                   </tr>
                 </thead>
@@ -327,13 +325,12 @@ export function ActivityTab({
                         </td>
                         <td className="px-4 py-2">
                           <span
-                            className={`px-2 py-0.5 rounded text-xs font-medium ${
-                              tx.type === "medication"
-                                ? "bg-blue-100 text-blue-700"
-                                : tx.type === "bill"
-                                  ? "bg-purple-100 text-purple-700"
-                                  : "bg-slate-100 text-slate-600"
-                            }`}
+                            className={`px-2 py-0.5 rounded text-xs font-medium ${tx.type === "medication"
+                              ? "bg-blue-100 text-blue-700"
+                              : tx.type === "bill"
+                                ? "bg-purple-100 text-purple-700"
+                                : "bg-slate-100 text-slate-600"
+                              }`}
                           >
                             {tx.type}
                           </span>
@@ -347,13 +344,12 @@ export function ActivityTab({
                         </td>
                         <td className="px-4 py-2 text-right">
                           <span
-                            className={`px-2 py-0.5 rounded text-xs ${
-                              tx.status === "completed"
-                                ? "bg-green-100 text-green-700"
-                                : tx.status === "blocked"
-                                  ? "bg-red-100 text-red-700"
-                                  : "bg-amber-100 text-amber-700"
-                            }`}
+                            className={`px-2 py-0.5 rounded text-xs ${tx.status === "completed"
+                              ? "bg-green-100 text-green-700"
+                              : tx.status === "blocked"
+                                ? "bg-red-100 text-red-700"
+                                : "bg-amber-100 text-amber-700"
+                              }`}
                           >
                             {tx.status}
                           </span>
