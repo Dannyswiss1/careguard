@@ -52,3 +52,7 @@ node dist/server.js             # starts the server from compiled output
 | Build | `tsc` compiles to `dist/` | `tsx` runtime loads `.ts` directly |
 | Start command | `node dist/server.js` | `node --import tsx server.ts` |
 | Flags needed | None | None (tsx runtime) |
+
+---
+
+For a deployment topology diagram showing how the Render service relates to Redis, external dependencies, and the Docker Compose stack, see [topology.md](topology.md).

@@ -2,6 +2,7 @@
 
 import { usePathname, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { isValidLocale, type Locale } from "../i18n";
 import { DashboardFooter } from "../components/dashboard-footer";
 import { DashboardHeader } from "../components/dashboard-header";
 import { DashboardTabsNav } from "../components/dashboard-tabs-nav";
@@ -22,6 +23,8 @@ import { useRecipients } from "../lib/useRecipients";
 import { ConfigErrorPage } from "../components/config-error-page";
 import { AGENT_URL } from "../lib/agent-url";
 
+
+import { DEFAULT_LOCALE } from "../i18n";
 
 export default function Dashboard() {
   // In production, AGENT_URL is null when NEXT_PUBLIC_API_URL is unset.
@@ -53,6 +56,8 @@ export default function Dashboard() {
       : "overview";
   }, [searchParams]);
 
+  const localeParam = searchParams.get("locale");
+  const locale: Locale = isValidLocale(localeParam || "") ? localeParam as Locale : "en";
   const state = useAgentState({ activeTab });
 
   const ariaLogRef = useRef<number | null>(null);
@@ -113,18 +118,22 @@ export default function Dashboard() {
             onRunTask={state.runAgentTask}
             onCancelTask={state.cancelAgentTask}
             recipient={recipient}
+            locale={locale}
+            locale={DEFAULT_LOCALE}
           />
         )}
         {activeTab === "medications" && (
           <MedicationsTab
             agentResult={state.agentResult}
             recipient={recipient}
+            locale={locale}
           />
         )}
         {activeTab === "bills" && (
           <BillsTab
             agentResult={state.agentResult}
             recipient={recipient}
+            locale={locale}
           />
         )}
         {activeTab === "approvals" && (
@@ -170,6 +179,7 @@ export default function Dashboard() {
             onResetAgent={state.resetAgent}
             loadingTransactions={state.loadingTransactions}
             loadingSpending={state.loadingSpending}
+            locale={locale}
           />
         )}
         {activeTab === "settings" && (

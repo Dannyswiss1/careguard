@@ -47,6 +47,8 @@ Every payment is a real Stellar testnet transaction verifiable on [stellar.exper
 
 For a full runtime flow diagram, module map, and integration details, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+For deployment topology (Docker Compose and Render), see [docs/deployment/topology.md](docs/deployment/topology.md).
+
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -165,6 +167,23 @@ Boot time on a warm Docker is ~30s (cold first build is much longer due to npm i
 
 See [docs/observability/health-checks.md](docs/observability/health-checks.md) for the `/health` and `/ready` response schemas and what each dependency check means.
 
+For a symptom-to-resolution index (stuck agent spinner, repeated 402s, blank wallet balance, dashboard "Disconnected", startup hangs on Horizon, missing env), see [docs/troubleshooting.md](docs/troubleshooting.md).
+
+---
+
+## API Documentation
+
+The OpenAPI 3.1 spec is rendered as an interactive reference by the unified server:
+
+| What | Local | Production |
+|------|-------|------------|
+| Interactive reference | <http://localhost:3000/docs> | <https://api.careguard.xyz/docs> |
+| Raw spec | <http://localhost:3000/openapi.yml> | <https://api.careguard.xyz/openapi.yml> |
+
+The spec is generated (`npm run gen-openapi`), never hand-edited, and validated in
+CI (`npm run validate:openapi`). See [docs/api/README.md](docs/api/README.md) for the
+hosting setup, CI validation, and how the x402 `X-PAYMENT` auth scheme works.
+
 ---
 
 ## Running Tests
@@ -258,6 +277,19 @@ careguard/
 ├── .env.example           # Environment variable template
 ├── QUICKSTART.md          # Setup guide
 ```
+
+---
+
+## Ops and Reliability
+
+| Doc | What it covers |
+|-----|---------------|
+| [docs/sla.md](docs/sla.md) | Availability targets, downtime definitions, dependency caveats, and maintenance-window policy |
+| [docs/release/production-readiness.md](docs/release/production-readiness.md) | Go-live checklist: security gates, observability, testnet → mainnet cutover, and payment config verification |
+| [docs/release/compatibility-matrix.md](docs/release/compatibility-matrix.md) | Node, SDK, and API contract version requirements per release |
+| [docs/observability/slo.md](docs/observability/slo.md) | SLO targets, error budgets, and alert mappings |
+| [docs/observability/health-checks.md](docs/observability/health-checks.md) | `/health` and `/ready` response schemas |
+| [docs/runbooks/README.md](docs/runbooks/README.md) | Operational runbooks for outages and incidents |
 
 ---
 

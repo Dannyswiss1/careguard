@@ -34,6 +34,8 @@ If you use [nvm](https://github.com/nvm-sh/nvm), running `nvm use` in the projec
 3. Run `npm test` (root) and `cd dashboard && npm test` before pushing
 4. Open a pull request — CI must be green before merge
 
+When cutting a release, update [`docs/release/compatibility-matrix.md`](docs/release/compatibility-matrix.md) with the new version row (Node, SDK, and API contract versions). See [docs/release/versioning.md](docs/release/versioning.md) for the full release process.
+
 ## Dependency Management
 
 Dependencies are kept up to date automatically via [Dependabot](.github/dependabot.yml).
@@ -82,6 +84,14 @@ For information on versioning, deprecations, hotfixes, and rollbacks, see:
 - [Hotfix Process](docs/release/hotfix-process.md) — Emergency patch release workflow
 - [Rollback Procedure](docs/release/rollback.md) — How to revert a bad release
 
+## Architecture Decisions
+
+Significant architectural decisions are documented as ADRs in
+[docs/adr/README.md](docs/adr/README.md). Before making a major
+change, check whether a prior ADR covers the topic. If no existing
+ADR addresses the decision, propose one using the template in the
+ADR index.
+
 ## Security
 
 - Never commit secrets or `.env` files — they are gitignored
@@ -93,6 +103,20 @@ For information on versioning, deprecations, hotfixes, and rollbacks, see:
 - TypeScript strict mode — no `any` without justification
 - ESLint + Prettier (run `npm run lint` before pushing)
 - Keep services self-contained; shared code goes in `shared/`
+
+## API Changes
+
+HTTP endpoints are described by [`docs/openapi.yml`](docs/openapi.yml), rendered
+at `/docs` on the running server (<http://localhost:3000/docs> locally). The spec
+is **generated** — never edit the YAML by hand:
+
+1. Change the endpoint definition in [`scripts/gen-openapi.ts`](scripts/gen-openapi.ts)
+2. Run `npm run gen-openapi` and commit the regenerated `docs/openapi.yml`
+3. Run `npm run validate:openapi` — CI runs the same check plus a full OpenAPI
+   3.1 lint, and fails on a malformed or out-of-date spec
+
+See [`docs/api/README.md`](docs/api/README.md) for how the docs are hosted, how
+CI validates the spec, and how the x402 `X-PAYMENT` auth scheme behaves.
 
 ## Observability
 
