@@ -7,6 +7,7 @@ import { Card } from "../primitives/card";
 import type { AgentResult, AgentLlmError, SpendingData } from "../types";
 import type { RecipientProfile } from "../../lib/types";
 import { agentFetch } from "../../lib/agent-fetch";
+import { formatCurrency, type Locale } from "../../i18n";
 
 export interface OverviewTabProps {
   spending: SpendingData | null;
@@ -17,6 +18,9 @@ export interface OverviewTabProps {
   onRunTask: (task: string, label: string) => void;
   onCancelTask?: () => void;
   recipient?: RecipientProfile;
+  // #1138 — defaults to "en" so existing callers that don't pass a locale
+  // render identically to before this change.
+  locale?: Locale;
 }
 
 const TASKS = {
@@ -34,6 +38,7 @@ export function OverviewTab({
   onRunTask,
   onCancelTask,
   recipient,
+  locale = "en",
 }: OverviewTabProps) {
   const savings = agentResult
     ? agentResult.toolCalls
@@ -68,32 +73,32 @@ export function OverviewTab({
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <Card
           label="Monthly Spending"
-          value={`$${spending?.spending.total.toFixed(2) || "0.00"}`}
-          sub={`of $${spending?.policy.monthlyLimit || 500} limit`}
+          value={formatCurrency(spending?.spending.total ?? 0, locale)}
+          sub={`of ${formatCurrency(spending?.policy.monthlyLimit ?? 500, locale, 0)} limit`}
           color="sky"
         />
         <Card
           label="Savings Found"
-          value={agentResult ? `$${savings.toFixed(2)}/mo` : "$0.00/mo"}
+          value={agentResult ? `${formatCurrency(savings, locale)}/mo` : `${formatCurrency(0, locale)}/mo`}
           sub="by switching pharmacies"
           color="green"
         />
         <Card
           label="Billing Errors Caught"
-          value={agentResult ? `$${overcharges.toFixed(2)}` : "$0.00"}
+          value={agentResult ? formatCurrency(overcharges, locale) : formatCurrency(0, locale)}
           sub="in overcharges identified"
           color="amber"
         />
         <Card
           label="Agent API Costs"
-          value={`$${spending?.spending.serviceFees.toFixed(4) || "0.0000"}`}
+          value={formatCurrency(spending?.spending.serviceFees ?? 0, locale, 4)}
           sub={`${spending?.transactionCount || 0} queries via x402`}
           color="slate"
         />
         <Card
           label="LLM Tokens"
           value={agentResult ? `${llmTokens} tokens` : "0 tokens"}
-          sub={`≈ $${llmCost} this run`}
+          sub={`≈ ${formatCurrency(Number(llmCost), locale, 4)} this run`}
           color="sky"
         />
       </div>
