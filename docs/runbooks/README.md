@@ -18,6 +18,7 @@ Operational runbooks for on-call engineers. Each runbook follows the template:
 | [horizon-down.md](horizon-down.md) | Stellar Horizon outage or testnet congestion — detection, in-doubt settlement verification, fee-bump tuning, recovery |
 | [redis-down.md](redis-down.md) | Redis unavailable — in-process cache fallback, what state degrades (webhook replay protection), and recovery |
 | [disk-full.md](disk-full.md) | Disk full / data directory exhaustion — diagnosing largest writers, safe recovery without breaking the audit-log hash chain |
+| [grafana-backup.md](grafana-backup.md) | Grafana dashboard state lost after `docker compose down -v` — what's provisioned (survives) vs. UI-only (doesn't), exporting dashboards back into `docker/grafana/dashboards/`, restoring provisioning after a fresh boot |
 
 ---
 
