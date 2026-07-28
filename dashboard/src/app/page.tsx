@@ -107,7 +107,7 @@ export default function Dashboard() {
         transactionsError={state.transactionsError}
       />
       <div className="max-w-7xl mx-auto px-4 py-6">
-        <DashboardTabsNav activeTab={activeTab} pathname={pathname} />
+        <DashboardTabsNav activeTab={activeTab} pathname={pathname} locale={locale} />
         {activeTab === "overview" && (
           <OverviewTab
             spending={state.spending}
