@@ -1,11 +1,11 @@
 /// <reference types="@testing-library/jest-dom" />
 import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
-import { OverviewTab } from "./overview-tab";
+import { OverviewTab } from "../components/tabs/overview-tab";
 
 // Mock AdherencePrompt since it does fetching
-vi.mock("./overview-tab", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./overview-tab")>();
+vi.mock("../components/tabs/overview-tab", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../components/tabs/overview-tab")>();
   return {
     ...actual,
     AdherencePrompt: () => <div data-testid="adherence-prompt" />,

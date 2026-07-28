@@ -1,5 +1,6 @@
 "use client";
 
+import { toast } from "sonner";
 import { downloadMedicationPDF } from "../../app/pdf";
 import {
   DrugInteractionResultSchema,
@@ -39,21 +40,25 @@ export function MedicationsTab({ agentResult, recipient }: MedicationsTabProps) 
           {hasPriceResults && (
             <button
               onClick={() => {
-                const priceResults = agentResult!.toolCalls
-                  .filter((t) => t.tool === "compare_pharmacy_prices")
-                  .map((t) => PharmacyCompareResultSchema.parse(t.result));
-                const interactionResult = agentResult!.toolCalls.find(
-                  (t) => t.tool === "check_drug_interactions",
-                )?.result;
-                downloadMedicationPDF(
-                  {
-                    priceResults,
-                    interactionResult: interactionResult
-                      ? DrugInteractionResultSchema.parse(interactionResult)
-                      : undefined,
-                  },
-                  { recipient },
-                );
+                try {
+                  const priceResults = agentResult!.toolCalls
+                    .filter((t) => t.tool === "compare_pharmacy_prices")
+                    .map((t) => PharmacyCompareResultSchema.parse(t.result));
+                  const interactionResult = agentResult!.toolCalls.find(
+                    (t) => t.tool === "check_drug_interactions",
+                  )?.result;
+                  downloadMedicationPDF(
+                    {
+                      priceResults,
+                      interactionResult: interactionResult
+                        ? DrugInteractionResultSchema.parse(interactionResult)
+                        : undefined,
+                    },
+                    { recipient },
+                  );
+                } catch {
+                  toast.error("Couldn't parse medication result — try again");
+                }
               }}
               className="px-3 py-1.5 bg-sky-50 text-sky-700 rounded-lg text-xs font-medium hover:bg-sky-100 active:bg-sky-200 cursor-pointer transition-all"
             >
