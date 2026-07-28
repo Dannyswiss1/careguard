@@ -138,6 +138,18 @@ If a future feature genuinely needs client-side persistence (e.g. a non-sensitiv
 
 ---
 
+## Data Retention
+
+PHI scrubbing above (#97) only covers text sent to the LLM provider — it does
+nothing for data already persisted to disk. See
+[`docs/data/retention.md`](data/retention.md) for retention periods per data
+class (spending, orders, care recipient profile, audit log, application
+logs), the data-subject erasure procedure and its tension with the
+append-only audit chain, what's actually protected at rest today (exposure
+prevention, not encryption), and the relevant HIPAA/GDPR obligations.
+
+---
+
 ## Secret Rotation
 
 See `docs/runbooks/rotate-secrets.md` for step-by-step rotation procedures for every secret (agent wallet, OZ API key, LLM key, MPP key, JWT).

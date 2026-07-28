@@ -46,6 +46,13 @@ The following files contain sensitive financial data and must never appear in gi
 | `transactions.jsonl` | Append-only transaction log |
 | `policy.json` | Spending policy configuration |
 
+Marking these files sensitive says nothing about how long they're kept or
+how a caregiver/recipient's data gets deleted. See
+[`docs/data/retention.md`](./retention.md) for retention periods per data
+class, the data-subject erasure procedure, and what's actually protected at
+rest (this file's "sensitive" label means "kept out of git," not encrypted
+on disk — `retention.md` covers that distinction in full).
+
 ## Git History Scrubbing
 
 If sensitive data files were committed in the past, use `git filter-repo` to remove them from history:
