@@ -83,4 +83,4 @@ Codes use `SCREAMING_SNAKE_CASE` with a category prefix:
 ## Cross-References
 
 - `docs/openapi.yml` — `Error.code` field enum (keep in sync with this registry)
-- `docs/troubleshooting.md` — operator-facing troubleshooting guide (TODO)
+- `docs/troubleshooting.md` — operator-facing troubleshooting guide

@@ -196,6 +196,11 @@ for b in d['balances']:
 | Dashboard can't connect | Ensure backend services are running (`npm run dev`) |
 | Port already in use | Kill existing processes on the ports (see below) |
 
+For symptoms beyond setup-time issues — stuck agent spinner, repeated 402s,
+blank wallet balance, dashboard "Disconnected", startup hangs on Horizon —
+see [docs/troubleshooting.md](docs/troubleshooting.md), which routes each to
+the relevant runbook.
+
 ### Port Cleanup by OS
 
 **macOS / Linux:**

@@ -167,6 +167,8 @@ Boot time on a warm Docker is ~30s (cold first build is much longer due to npm i
 
 See [docs/observability/health-checks.md](docs/observability/health-checks.md) for the `/health` and `/ready` response schemas and what each dependency check means.
 
+For a symptom-to-resolution index (stuck agent spinner, repeated 402s, blank wallet balance, dashboard "Disconnected", startup hangs on Horizon, missing env), see [docs/troubleshooting.md](docs/troubleshooting.md).
+
 ---
 
 ## API Documentation
