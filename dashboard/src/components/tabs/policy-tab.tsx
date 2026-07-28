@@ -7,19 +7,10 @@ import {
   type PolicyFieldError,
   type SpendingPolicyInput,
 } from "../../lib/schemas";
+import { POLICY_FIELD_T_KEY as FIELD_T_KEY } from "../../lib/policy-field-labels";
 import type { SpendingData } from "../types";
 import { Toast } from "../primitives/toast";
 import { getTranslations, type Locale } from "../../i18n";
-
-/** Maps SpendingPolicyInput keys to policy.* translation keys. */
-const FIELD_T_KEY: Record<keyof SpendingPolicyInput, string> = {
-  dailyLimit: "dailyLimit",
-  monthlyLimit: "monthlyLimit",
-  medicationMonthlyBudget: "medicationBudget",
-  billMonthlyBudget: "billBudget",
-  approvalThreshold: "approvalThreshold",
-  holdTimeSeconds: "holdTime",
-};
 
 const FIELDS: Array<keyof SpendingPolicyInput> = [
   "dailyLimit",
