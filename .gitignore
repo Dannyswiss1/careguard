@@ -14,3 +14,34 @@ data/**/*.json
 data/**/*.jsonl
 .DS_Store
 fix.md
+
+# Test snapshots and generated test artefacts
+**/__snapshots__/
+**/*.snap
+playwright-report/
+test-results/
+coverage/
+.nyc_output/
+
+# Build artefacts
+dist/
+*.tsbuildinfo
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+*.iml
+
+# Dependency lock duplicates (keep root lockfiles, ignore nested generated ones)
+**/node_modules/
+
+# Temporary / scratch files
+*.tmp
+*.bak
+fix.md
+ISSUES_*.md
+IMPLEMENTATION_SUMMARY.md
+implementation.md

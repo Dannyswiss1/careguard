@@ -34,6 +34,8 @@ If you use [nvm](https://github.com/nvm-sh/nvm), running `nvm use` in the projec
 3. Run `npm test` (root) and `cd dashboard && npm test` before pushing
 4. Open a pull request — CI must be green before merge
 
+When cutting a release, update [`docs/release/compatibility-matrix.md`](docs/release/compatibility-matrix.md) with the new version row (Node, SDK, and API contract versions). See [docs/release/versioning.md](docs/release/versioning.md) for the full release process.
+
 ## Dependency Management
 
 Dependencies are kept up to date automatically via [Dependabot](.github/dependabot.yml).
