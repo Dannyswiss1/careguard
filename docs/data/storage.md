@@ -55,3 +55,8 @@ git filter-repo --path data/spending.json --path data/orders.json --invert-paths
 ```
 
 After scrubbing, force-push to all branches and notify collaborators to rebase.
+
+## Disaster Recovery & Backups
+
+For backup cadences, recovery targets (RTO/RPO), restore procedures, and audit log integrity verification, refer to the [Backup and Disaster Recovery Runbook](file:///Users/favoureze/careguard/docs/runbooks/backup-restore.md).
+
