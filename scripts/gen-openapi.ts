@@ -142,6 +142,7 @@ interface OpenAPISpec {
       };
     };
     schemas: Record<string, Record<string, unknown>>;
+    responses?: Record<string, Record<string, unknown>>;
   };
   paths: Record<string, OpenAPIPath>;
 }
@@ -195,20 +196,20 @@ export function generateSpec(): OpenAPISpec {
       schemas: {
         Error: {
           type: "object",
-          description:
-            "Standard error envelope for 4xx/5xx responses. See docs/error-codes.md for the full registry of `code` values, their meaning, and remediation.",
+          required: ["error", "code"],
           properties: {
             error: {
               type: "string",
-              description: "Human-readable message — do NOT branch on this value.",
+              description: "A human-readable description of the error.",
             },
             code: {
               type: "string",
-              enum: [...ERROR_CODES],
-              description:
-                "Stable machine-readable error code. See docs/error-codes.md for the full registry.",
+              description: "A stable, machine-readable uppercase SNAKE_CASE code identifying the specific type of error.",
             },
-            details: { type: "object" },
+            details: {
+              type: "object",
+              description: "Structured metadata or field-level details specific to the error code.",
+            },
           },
           required: ["error", "code"],
         },
@@ -244,6 +245,64 @@ export function generateSpec(): OpenAPISpec {
                 horizon: { type: "boolean" },
                 ozFacilitator: { oneOf: [{ type: "boolean" }, { type: "string" }] },
               },
+            },
+          },
+        },
+      },
+      responses: {
+        BadRequestError: {
+          description: "Bad Request / Validation Error",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/Error" },
+            },
+          },
+        },
+        UnauthorizedError: {
+          description: "Missing or invalid authentication credentials",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/Error" },
+            },
+          },
+        },
+        ForbiddenError: {
+          description: "Forbidden access (e.g., CSRF token mismatch, invalid admin credentials)",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/Error" },
+            },
+          },
+        },
+        NotFoundError: {
+          description: "Requested resource not found",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/Error" },
+            },
+          },
+        },
+        PaymentRequiredError: {
+          description: "Payment required (x402 / MPP Challenge)",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/Error" },
+            },
+          },
+        },
+        ConflictError: {
+          description: "Conflict / State violation (e.g., Agent is paused)",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/Error" },
+            },
+          },
+        },
+        InternalServerError: {
+          description: "Internal server error",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/Error" },
             },
           },
         },
@@ -316,6 +375,9 @@ export function generateSpec(): OpenAPISpec {
                 },
               },
             },
+            "401": { $ref: "#/components/responses/UnauthorizedError" },
+            "403": { $ref: "#/components/responses/ForbiddenError" },
+            "500": { $ref: "#/components/responses/InternalServerError" },
             "429": RATE_LIMIT_RESPONSE,
             "500": SERVER_ERROR_RESPONSE,
           },
@@ -410,6 +472,15 @@ export function generateSpec(): OpenAPISpec {
             "200": {
               description: "Price created or updated",
             },
+            "400": {
+              $ref: "#/components/responses/BadRequestError",
+            },
+            "401": {
+              $ref: "#/components/responses/UnauthorizedError",
+            },
+            "403": {
+              $ref: "#/components/responses/ForbiddenError",
+            },
             "400": errorResponse(
               "Validation error. `code` is one of VALIDATION_MISSING_FIELD, VALIDATION_INVALID_INPUT.",
             ),
@@ -468,6 +539,10 @@ export function generateSpec(): OpenAPISpec {
               description: "Audit results",
             },
             "400": {
+              $ref: "#/components/responses/BadRequestError",
+            },
+            "402": {
+              $ref: "#/components/responses/PaymentRequiredError",
               description: "Validation error. `code` is one of VALIDATION_MISSING_FIELD, VALIDATION_INVALID_INPUT.",
               content: {
                 "application/json": {
@@ -509,6 +584,12 @@ export function generateSpec(): OpenAPISpec {
           responses: {
             "200": {
               description: "Drug interaction results",
+            },
+            "400": {
+              $ref: "#/components/responses/BadRequestError",
+            },
+            "402": {
+              $ref: "#/components/responses/PaymentRequiredError",
             },
             "400": errorResponse(
               "Validation error. `code` is one of VALIDATION_MISSING_FIELD, VALIDATION_INVALID_INPUT, VALIDATION_INSUFFICIENT_SCORE.",
@@ -555,6 +636,12 @@ export function generateSpec(): OpenAPISpec {
           responses: {
             "200": {
               description: "Order confirmed",
+            },
+            "400": {
+              $ref: "#/components/responses/BadRequestError",
+            },
+            "402": {
+              $ref: "#/components/responses/PaymentRequiredError",
             },
             "400": errorResponse(
               "Validation error. `code` is one of VALIDATION_MISSING_FIELD, VALIDATION_INVALID_INPUT.",
