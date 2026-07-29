@@ -10,6 +10,8 @@ Runtime state written by the CareGuard agent is stored under `data/`. This direc
 data/
 ├── README.md                  # Brief usage note
 ├── seed.json.example          # Bootstrap template for new deployments
+├── audit.log.jsonl            # Hash-chained, append-only audit log (active segment)
+├── audit.log.jsonl.1..12      # Rotated archive segments (.1 newest, .12 oldest)
 ├── recipients/
 │   └── <recipientId>/
 │       ├── spending.json           # Legacy full-file (backward compat)
@@ -18,6 +20,10 @@ data/
 │       ├── policy.json             # Per-recipient spending policy
 │       └── orders.json             # Order history
 ```
+
+For the exact record shape, hash-chain fields, and rotation naming of
+`audit.log.jsonl`, see
+[`docs/data/audit-log-schema.md`](./audit-log-schema.md).
 
 ## Persistence Strategy
 

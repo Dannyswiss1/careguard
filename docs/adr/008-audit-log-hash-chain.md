@@ -4,6 +4,11 @@
 **Date:** 2026-07-27  
 **Issues:** [#742](https://github.com/harystyleseze/careguard/issues/742)
 
+> For the precise, field-by-field record schema, hash-chain verification
+> steps, and rotation-file naming — the operator/integrator reference, as
+> opposed to this ADR's design rationale — see
+> [`docs/data/audit-log-schema.md`](../data/audit-log-schema.md).
+
 ---
 
 ## Context
