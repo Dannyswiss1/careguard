@@ -73,7 +73,15 @@ export function ApprovalsTab({
                           try {
                             const ms = new Date(tx.pendingUntil).getTime() - Date.now();
                             const sec = Math.max(0, Math.ceil(ms / 1000));
-                            return `Auto-approve in ${sec}s`;
+                            const announcedSec = sec <= 5 ? sec : Math.ceil(sec / 10) * 10;
+                            return (
+                              <>
+                                <span aria-hidden="true">Auto-approve in {sec}s</span>
+                                <span className="sr-only" aria-live="polite">
+                                  Auto-approve in {announcedSec} seconds
+                                </span>
+                              </>
+                            );
                           } catch {
                             return null;
                           }

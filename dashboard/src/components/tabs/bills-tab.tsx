@@ -153,6 +153,7 @@ export function BillsTab({ agentResult, recipient, locale = "en" }: BillsTabProp
               </span>
               <button
                 onClick={() => setShowErrorsOnly(!showErrorsOnly)}
+                aria-pressed={showErrorsOnly}
                 className="text-xs text-sky-600 hover:text-sky-800 cursor-pointer"
               >
                 {showErrorsOnly ? b.showAll : b.showErrors}
