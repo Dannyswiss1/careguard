@@ -68,6 +68,8 @@ export function useAgentState({ activeTab }: UseAgentStateOptions) {
   const [policyDirty, setPolicyDirty] = useState(false);
   const [policySaved, setPolicySaved] = useState(false);
   const [abortController, setAbortController] = useState<AbortController | null>(null);
+  const [approvals, setApprovals] = useState<Transaction[]>([]);
+  const [approvalsLoading, setApprovalsLoading] = useState(false);
 
   // Individual loading states for each data source (Issue #283)
   const [loadingAgentInfo, setLoadingAgentInfo] = useState(false);
@@ -89,6 +91,45 @@ export function useAgentState({ activeTab }: UseAgentStateOptions) {
   useEffect(() => {
     policyDirtyRef.current = policyDirty;
   }, [policyDirty]);
+
+  const fetchApprovals = useCallback(async () => {
+    try {
+      const res = await agentFetch(`${AGENT_URL}/agent/pending-approvals`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setApprovals(data.approvals || []);
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    if (activeTab !== 'approvals') return;
+    void fetchApprovals();
+    const interval = setInterval(fetchApprovals, 5000);
+    return () => clearInterval(interval);
+  }, [activeTab, fetchApprovals]);
+
+  const updateApproval = useCallback(async (txId: string, approve: boolean) => {
+    setApprovalsLoading(true);
+    try {
+      const res = await agentFetch(`${AGENT_URL}/agent/approvals/${txId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ approve }),
+      });
+      if (res.ok) await fetchApprovals();
+    } finally {
+      setApprovalsLoading(false);
+    }
+  }, [fetchApprovals]);
+
+  const approveTransaction = useCallback(
+    (txId: string) => updateApproval(txId, true),
+    [updateApproval],
+  );
+  const cancelTransaction = useCallback(
+    (txId: string) => updateApproval(txId, false),
+    [updateApproval],
+  );
 
   useEffect(() => {
     const connectionState = !agentConnected
@@ -565,6 +606,8 @@ export function useAgentState({ activeTab }: UseAgentStateOptions) {
     policyDirty,
     setPolicyDirty,
     policySaved,
+    approvals,
+    approvalsLoading,
     // individual loading states (Issue #283)
     loadingAgentInfo,
     loadingSpending,
@@ -581,5 +624,7 @@ export function useAgentState({ activeTab }: UseAgentStateOptions) {
     resetAgent,
     togglePause,
     addLogEntry,
+    approveTransaction,
+    cancelTransaction,
   };
 }

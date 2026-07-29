@@ -137,7 +137,14 @@ export default function Dashboard() {
           />
         )}
         {activeTab === "approvals" && (
-          <ApprovalsTab agentConnected={state.agentConnected} />
+          <ApprovalsTab
+            agentConnected={state.agentConnected}
+            approvals={state.approvals}
+            loading={state.approvalsLoading}
+            onApprove={state.approveTransaction}
+            onCancel={state.cancelTransaction}
+            locale={locale}
+          />
         )}
         {activeTab === "policy" && (
           <PolicyTab
