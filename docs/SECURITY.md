@@ -1,5 +1,11 @@
 # CareGuard Security Model
 
+## Security reference docs
+
+- `docs/security/authn-authz.md` — authentication and authorization model for all externally reachable endpoints
+- `docs/security/threat-model-review.md` — review cadence, ownership, and event triggers
+- `docs/security/disclosure-policy.md` — coordinated disclosure timeline and SLA
+
 ## Threat Model
 
 CareGuard is an autonomous healthcare financial agent that makes real payments on Stellar. The primary adversarial surface is the `/agent/run` endpoint, which accepts free-text tasks from the caregiver dashboard and routes them into an LLM that can call financial tools.
@@ -115,3 +121,6 @@ See `docs/runbooks/rotate-secrets.md` for step-by-step rotation procedures for e
 ## Reporting Vulnerabilities
 
 Open a private issue on the repository or contact the maintainers directly. Do not disclose vulnerabilities publicly before a fix is available.
+
+- `docs/security/disclosure-policy.md` — coordinated disclosure policy, timelines, and severity SLAs
+- `docs/security/threat-model-review.md` — review cadence and triggers for security model changes

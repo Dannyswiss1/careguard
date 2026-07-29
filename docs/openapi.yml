@@ -1,0 +1,132 @@
+openapi: '3.1.0'
+info:
+  title: 'CareGuard API'
+  version: '1.0.0'
+  description: 'OpenAPI spec for CareGuard services: agent spending, pharmacy, bill audit, drug interactions, and payments.'
+servers:
+  - url: 'http://localhost:3000'
+    description: 'Development server'
+  - url: 'https://api.careguard.xyz'
+    description: 'Production server'
+security:
+  - CaregiverBearerAuth:
+[]
+components:
+  securitySchemes:
+    CaregiverBearerAuth:
+      type: 'http'
+      scheme: 'bearer'
+      bearerFormat: 'token'
+      description: 'Bearer token used to authorize caregiver access to /agent/* endpoints. Set CAREGIVER_TOKEN in environment variables.'
+  schemas:
+    Error:
+      type: 'object'
+      properties:
+        error:
+          type: 'string'
+        code:
+          type: 'string'
+        details:
+          type: 'object'
+paths:
+  /agent/spending:
+    get:
+      summary: 'Get agent spending summary'
+      tags:
+        - 'Agent'
+      responses:
+        200:
+          description: 'Spending summary'
+          content:
+            application/json:
+              schema:
+                type: 'object'
+                properties:
+                  totalSpent:
+                    type: 'number'
+                  categories:
+                    type: 'object'
+  /pharmacy:
+    post:
+      summary: 'Query pharmacy API'
+      tags:
+        - 'Pharmacy'
+      security:
+        - X402Auth:
+[]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: 'object'
+              properties:
+                query:
+                  type: 'string'
+              required:
+                - 'query'
+      responses:
+        200:
+          description: 'Pharmacy query results'
+        400:
+          description: 'Invalid request'
+  /bill-audit:
+    post:
+      summary: 'Audit medical bills'
+      tags:
+        - 'Bill Audit'
+      security:
+        - X402Auth:
+[]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: 'object'
+              properties:
+                items:
+                  type: 'array'
+                  items:
+                    type: 'object'
+                    properties:
+                      cptCode:
+                        type: 'string'
+                      quantity:
+                        type: 'integer'
+                        minimum: 1
+                        maximum: 999
+                      chargedAmount:
+                        type: 'number'
+                        minimum: 0
+                        maximum: 1000000
+                      description:
+                        type: 'string'
+                        minLength: 1
+                    required:
+                      - 'cptCode'
+                      - 'quantity'
+                      - 'chargedAmount'
+                      - 'description'
+              required:
+                - 'items'
+      responses:
+        200:
+          description: 'Audit results'
+        400:
+          description: 'Validation error'
+          content:
+            application/json:
+              schema:
+                type: 'object'
+                properties:
+                  errors:
+                    type: 'array'
+  /docs:
+    get:
+      summary: 'API documentation UI'
+      tags:
+        - 'Documentation'
+      responses:
+        200:
+          description: 'Scalar UI serving this OpenAPI spec'
