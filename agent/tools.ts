@@ -2,7 +2,9 @@
  * CareGuard Agent Tools — Real payment integrations on Stellar testnet
  *
  * Supports multiple care recipients via per-recipient data directories.
- *   data/recipients/<recipientId>/spending.json
+ *   data/recipients/<recipientId>/spending.json        (legacy, kept for compat)
+ *   data/recipients/<recipientId>/transactions.jsonl   (append-only log, one JSON line per tx)
+ *   data/recipients/<recipientId>/spending.snapshot.json (compacted every 100 transactions)
  *   data/recipients/<recipientId>/orders.json
  *   data/recipients/<recipientId>/policy.json
  *
@@ -13,12 +15,28 @@
  *   ⚠️  DO NOT COMMIT files under data/recipients/ — they contain
  *   live balances and transaction history. Add them to .gitignore and never
  *   include them in a PR. See data/README.md for details.
+ *
+ * Persistence strategy (Issue #205):
+ *   - New transactions are appended as single JSON lines to transactions.jsonl.
+ *   - Every SNAPSHOT_INTERVAL (100) transactions the full tracker state is
+ *     compacted into spending.snapshot.json via an atomic rename.
+ *   - On read: load the snapshot, then replay only the tail of the JSONL that
+ *     was appended after the last compaction.
+ *   - spending.json is still written on full saves for backward compatibility
+ *     with any tooling that reads it directly.
  */
 
 import 'dotenv/config';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, renameSync, promises as fsPromises } from 'fs';
 import { z } from 'zod';
 import { logger } from '../shared/logger.ts';
+import { resolveStellarNetwork, validateSignerKeyForNetwork } from '../shared/stellar-network.ts';
+import {
+  BillAuditValidationError,
+  validateLineItems,
+  type LineItem,
+} from '../shared/bill-audit.ts';
 import {
   Keypair,
   Networks,
@@ -34,9 +52,16 @@ import {
 } from '@x402/fetch';
 import { createEd25519Signer, ExactStellarScheme } from '@x402/stellar';
 import { createMppClient, type MppClientInstance } from './mpp-client.ts';
-import type { SpendingPolicy, Transaction } from '../shared/types.ts';
-import { SPENDING_TIMEZONE, getLocalDateStr } from './tz.ts';
-export { SPENDING_TIMEZONE, getLocalDateStr };
+import {
+  STELLAR_TX_HASH_RE,
+  TRANSACTION_CATEGORY,
+  isTransactionCategory,
+  normalizeTransactionCategory,
+  type SpendingPolicy,
+  type Transaction,
+} from '../shared/types.ts';
+import { SPENDING_TIMEZONE, getLocalDateStr, getLocalDayBounds } from './tz.ts';
+export { SPENDING_TIMEZONE, getLocalDateStr, getLocalDayBounds };
 import { appendAuditEntry } from '../shared/audit-log.ts';
 import { notify } from '../shared/notifications.ts';
 import {
@@ -45,14 +70,20 @@ import {
   getFlaggedAdherences,
   confirmAdherence,
 } from '../shared/adherence.ts';
+import { Journal } from './journal.ts';
 import {
   x402SettlementsTotal,
   paymentsUsdcTotal,
   stellarTxSubmittedTotal,
   policyBlocksTotal,
+  paymentRejectedTotal,
   agentSpendingUsd,
   agentTransactionsTotal,
+  x402TxExtractionFailedTotal,
+  stellarFeeBumpsTotal,
+  stellarTxBadSeqRetriesTotal,
 } from '../shared/metrics.ts';
+import { getTargetFee } from '../shared/stellar-fee.ts';
 import {
   assertMockNetworkAllowed,
   createMockReceipt,
@@ -60,6 +91,35 @@ import {
 } from '../shared/network-mode.ts';
 
 assertMockNetworkAllowed();
+
+// Atomic file write helpers (Issues #203, #204)
+function writeAtomically(filePath: string, content: string): void {
+  const tempPath = `${filePath}.tmp-${Date.now()}`;
+  try {
+    writeFileSync(tempPath, content, 'utf-8');
+    renameSync(tempPath, filePath);
+  } catch (err) {
+    try { writeFileSync(filePath.slice(0, filePath.lastIndexOf('/')), '', 'utf-8'); } catch {}
+    throw err;
+  }
+}
+
+function rotateCorruptedFile(filePath: string): string {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const rotatedPath = `${filePath}.corrupt-${timestamp}`;
+  try {
+    renameSync(filePath, rotatedPath);
+    logger.error({ filePath, rotatedPath }, '[Persistence] Rotated corrupted file');
+  } catch (err) {
+    logger.error({ filePath, err }, '[Persistence] Failed to rotate corrupted file');
+  }
+  return rotatedPath;
+}
+
+// Resolve Stellar network configuration
+const STELLAR_CONFIG = resolveStellarNetwork();
+const STELLAR_NETWORK_PASSPHRASE = STELLAR_CONFIG.networkPassphrase;
+const HORIZON_URL = STELLAR_CONFIG.horizonUrl;
 
 // Environment
 const AGENT_SECRET_KEY = process.env.AGENT_SECRET_KEY;
@@ -73,128 +133,292 @@ const PHARMACY_PAYMENT_API =
 const USDC_ISSUER =
   process.env.USDC_ISSUER ||
   'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5';
-const HORIZON_URL = 'https://horizon-testnet.stellar.org';
+
+// On public network, USDC_ISSUER must be explicitly set.
+// Falling back to the testnet issuer on mainnet causes silent incorrect balance reads
+// (the issuer address is different on each network). See docs/security/asset-spoofing.md.
+if (STELLAR_CONFIG.networkType === 'public' && !process.env.USDC_ISSUER) {
+  throw new Error(
+    'USDC_ISSUER env var must be explicitly set when STELLAR_NETWORK=public. ' +
+    'Set it to the Circle USDC issuer for Stellar mainnet.',
+  );
+}
+
 const MIN_FEE_STROOPS = 100;
-const MAX_FEE_STROOPS = parseInt(process.env.MAX_FEE_STROOPS || '100000'); // Cap at 0.01 XLM default
+const MAX_FEE_STROOPS = parseInt(process.env.MAX_FEE_STROOPS || '100000');
+const STELLAR_TIMEBOUNDS_SECONDS = parseInt(process.env.STELLAR_TIMEBOUNDS_SECONDS || "60", 10);
+
+// Overall wall-clock budget for the fee-bump + retry path (issue #797):
+// submitTransactionWithFeeBump's retries and fee-doublings must never, in
+// aggregate, run past this many ms — a single submitTransaction call can
+// itself block for up to its own timeoutMs, so without an outer budget the
+// nested retry loops could keep resubmitting far past any caller's patience.
+const FEE_BUMP_BUDGET_MS = 35_000;
+
+/** Injectable clock so tests can simulate elapsed time without real sleeps. */
+export interface RetryClock {
+  now(): number;
+  sleep(ms: number): Promise<void>;
+}
+const REAL_CLOCK: RetryClock = {
+  now: () => Date.now(),
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+};
+
+/** Thrown when the fee-bump/retry budget is exhausted before a submit could start. */
+export class RetryBudgetExceededError extends Error {
+  constructor(budgetMs: number) {
+    super(`RETRY_BUDGET_EXCEEDED: no submit attempt started — ${budgetMs}ms budget exhausted`);
+    this.name = "RetryBudgetExceededError";
+  }
+}
 
 if (!AGENT_SECRET_KEY) throw new Error('AGENT_SECRET_KEY required in .env');
 
 const agentKeypair = Keypair.fromSecret(AGENT_SECRET_KEY);
+
+// Validate signer key matches configured network
+validateSignerKeyForNetwork(AGENT_SECRET_KEY, STELLAR_CONFIG);
+
 const horizonServer = new Horizon.Server(HORIZON_URL);
 
-// Helper: calculate recommended fee based on network conditions
+// Helper: calculate recommended fee based on network conditions (p90 from Horizon fee_stats)
 async function getRecommendedFee(): Promise<string> {
-  try {
-    const feeStats = await horizonServer.feeStats();
-    const recommendedFee = parseInt(feeStats.fee_charged.mode, 10);
-    // Use 1.5x the recommended fee to ensure acceptance during congestion
-    const adjustedFee = Math.max(MIN_FEE_STROOPS, Math.ceil(recommendedFee * 1.5));
-    const cappedFee = Math.min(adjustedFee, MAX_FEE_STROOPS);
-    return cappedFee.toString();
-  } catch (err) {
-    logger.warn({ err: (err as Error).message }, '[Stellar] Failed to fetch fee stats, using minimum fee');
-    return MIN_FEE_STROOPS.toString();
-  }
+  return getTargetFee(horizonServer);
 }
 
-// Helper: extract real Stellar tx hash from x402 PAYMENT-RESPONSE header
-function extractX402TxHash(response: Response): string | undefined {
+export const TX_HASH_EXTRACTION_FAILED = 'extraction_failed' as const;
+
+// Helper: extract real Stellar tx hash from x402 PAYMENT-RESPONSE header.
+// Returns undefined when no header is present, TX_HASH_EXTRACTION_FAILED when
+// the header is present but all decode strategies fail (logged + counted), or
+// a 64-char hex hash on success. Callers must check for the sentinel before
+// passing the result to waitForStellarSettlement (#191).
+export function extractX402TxHash(
+  response: Response,
+): string | typeof TX_HASH_EXTRACTION_FAILED | undefined {
   const header =
     response.headers.get('PAYMENT-RESPONSE') ||
     response.headers.get('payment-response') ||
     response.headers.get('X-PAYMENT-RESPONSE');
   if (!header) return undefined;
+
+  // Strategy 1: decode the structured payment-response header
   try {
     const decoded = decodePaymentResponseHeader(header);
-    return decoded.transaction || undefined;
+    if (decoded.transaction) return decoded.transaction;
   } catch {
-    // If decode fails, the header itself might be a raw hash
-    return header.length === 64 ? header : undefined;
+    // fall through to strategy 2
   }
+
+  // Strategy 2: the header itself might be a raw 64-char hex hash
+  if (STELLAR_TX_HASH_RE.test(header)) return header;
+
+  // All strategies failed — log full header for debugging and count the event
+  logger.warn(
+    { paymentResponseHeader: header.slice(0, 500) },
+    '[x402] extractX402TxHash: all extraction strategies failed; hash unverifiable on-chain',
+  );
+  x402TxExtractionFailedTotal.inc();
+  return TX_HASH_EXTRACTION_FAILED;
+}
+
+/**
+ * Read a Stellar transaction result code from a Horizon error.
+ *
+ * Horizon reports failures as `extras.result_codes.transaction` on a 400
+ * response; only some SDK/network paths surface the code in `err.message`.
+ * Matching on the message alone missed every real Horizon rejection (issue #796),
+ * so both are checked.
+ */
+function getTxResultCode(err: any): string {
+  return err?.response?.data?.extras?.result_codes?.transaction ?? "";
+}
+
+function isTxResultCode(err: any, code: string): boolean {
+  return getTxResultCode(err) === code || String(err?.message ?? "").includes(code);
 }
 
 // Helper: submitTransaction with timeout and retry
-async function submitTransactionWithRetry(
+export async function submitTransactionWithRetry(
   server: Horizon.Server,
   tx: any,
   maxRetries = 2,
   timeoutMs = 35000,
+  rebuildTx?: () => Promise<any>,
+  deadlineAt?: number,
+  clock: RetryClock = REAL_CLOCK,
 ): Promise<any> {
   let lastError: any;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    if (deadlineAt !== undefined && clock.now() >= deadlineAt) {
+      throw new RetryBudgetExceededError(FEE_BUMP_BUDGET_MS);
+    }
     try {
       const result = await server.submitTransaction(tx, { timeout: timeoutMs } as any);
       return result;
     } catch (err: any) {
       lastError = err;
-      // Don't retry if the server responded with a transaction failure
-      if (err?.response?.status) throw err;
-      // Don't retry if the transaction expired
-      const msg = err?.message ?? '';
-      if (
-        msg.includes('tx_bad_seq') ||
-        msg.includes('tx_too_early') ||
-        msg.includes('tx_too_late')
-      )
-        throw err;
+
+      const isBadSeq = isTxResultCode(err, "tx_bad_seq");
+      const isTooLate = isTxResultCode(err, "tx_too_late");
+      const isTooEarly = isTxResultCode(err, "tx_too_early");
+
+      // Horizon errors carry an HTTP status; only the sequence/timebound codes
+      // below are recoverable, everything else propagates untouched.
+      if (err?.response?.status && !isBadSeq && !isTooLate && !isTooEarly) throw err;
+
+      // tx_too_early: the transaction is not yet valid. Rebuilding cannot help —
+      // a fresh envelope has the same lower timebound — so surface it distinctly
+      // rather than burning retries or reloading the account.
+      if (isTooEarly) throw err;
+
+      // tx_bad_seq: sequence number mismatch — reload account and rebuild with 1 s backoff
+      if (isBadSeq && rebuildTx) {
+        for (let seqRetry = 0; seqRetry < 3; seqRetry++) {
+          if (deadlineAt !== undefined && clock.now() >= deadlineAt) {
+            throw new RetryBudgetExceededError(FEE_BUMP_BUDGET_MS);
+          }
+          await clock.sleep(1000);
+          try {
+            tx = await rebuildTx();
+          } catch {
+            break;
+          }
+          stellarTxBadSeqRetriesTotal.inc();
+          logger.warn(
+            { seq: tx?.sequence, attempt: seqRetry + 1, reason: "tx_bad_seq" },
+            "[Stellar] tx_bad_seq — reloaded account, retrying",
+          );
+          if (deadlineAt !== undefined && clock.now() >= deadlineAt) {
+            throw new RetryBudgetExceededError(FEE_BUMP_BUDGET_MS);
+          }
+          try {
+            const result = await server.submitTransaction(tx, { timeout: timeoutMs } as any);
+            return result;
+          } catch (retryErr: any) {
+            lastError = retryErr;
+            if (!isTxResultCode(retryErr, "tx_bad_seq")) throw retryErr;
+          }
+        }
+        throw lastError;
+      }
+
+      // tx_too_late: timebounds expired — retry once with fresh timebounds if rebuild fn provided
+      if (isTooLate && rebuildTx && attempt < maxRetries) {
+        logger.warn({ attempt: attempt + 1 }, "[Stellar] tx_too_late, rebuilding with fresh timebounds");
+        tx = await rebuildTx();
+        continue;
+      }
+      // A sequence/timebound failure with no way to recover (no rebuild fn, or
+      // retries exhausted) is terminal — never fall through to the generic
+      // backoff, which would resubmit the same doomed envelope.
+      if (isBadSeq || isTooEarly || isTooLate) throw err;
       if (attempt < maxRetries) {
         const delay = Math.pow(2, attempt) * 500;
+        if (deadlineAt !== undefined && clock.now() + delay >= deadlineAt) {
+          throw new RetryBudgetExceededError(FEE_BUMP_BUDGET_MS);
+        }
         logger.warn(
           { attempt: attempt + 1, maxRetries, delay },
           '[Stellar] submitTransaction timeout, retrying',
         );
-        await new Promise((r) => setTimeout(r, delay));
+        await clock.sleep(delay);
       }
     }
   }
   throw lastError;
 }
 
-// Helper: submit transaction with automatic fee bump on insufficient_fee error
-async function submitTransactionWithFeeBump(
+// Helper: submit transaction with automatic fee bump on insufficient_fee error.
+//
+// Attempt 1 submits a plain transaction at the recommended fee. Each
+// tx_insufficient_fee doubles the fee (capped at MAX_FEE_STROOPS) and resubmits
+// the transaction wrapped in a fee-bump envelope, for at most FEE_BUMP_MAX_ATTEMPTS
+// submissions in total. When the last allowed attempt still fails, that failure
+// is surfaced — the loop never retries indefinitely. Non-fee errors are never
+// wrapped and propagate on the spot.
+export const FEE_BUMP_MAX_ATTEMPTS = 3;
+
+export async function submitTransactionWithFeeBump(
   server: Horizon.Server,
   account: any,
   operations: any[],
   signer: Keypair,
   initialFee?: string,
+  clock: RetryClock = REAL_CLOCK,
 ): Promise<{ hash: string; fee: string }> {
   let currentFee = initialFee || await getRecommendedFee();
   let attempt = 0;
-  const maxAttempts = 2;
+  const deadlineAt = clock.now() + FEE_BUMP_BUDGET_MS;
 
-  while (attempt < maxAttempts) {
+  const buildInner = (source: any) => {
+    const builder = new TransactionBuilder(source, {
+      fee: currentFee,
+      networkPassphrase: STELLAR_NETWORK_PASSPHRASE,
+    });
+    for (const op of operations) {
+      builder.addOperation(op);
+    }
+    const built = builder.setTimeout(30).build();
+    built.sign(signer);
+    return built;
+  };
+
+  while (attempt < FEE_BUMP_MAX_ATTEMPTS) {
+    if (clock.now() >= deadlineAt) {
+      throw new RetryBudgetExceededError(FEE_BUMP_BUDGET_MS);
+    }
+
+    const isFeeBumpAttempt = attempt > 0;
+
     try {
-      const tx = new TransactionBuilder(account, {
-        fee: currentFee,
-        networkPassphrase: Networks.TESTNET,
-      });
+      const innerTx = buildInner(account);
 
-      for (const op of operations) {
-        tx.addOperation(op);
+      if (!isFeeBumpAttempt) {
+        // First attempt: a plain envelope, rebuildable on a sequence collision.
+        const result = await submitTransactionWithRetry(server, innerTx, 2, 35000, async () => {
+          const freshAccount = await server.loadAccount(signer.publicKey());
+          return buildInner(freshAccount);
+        }, deadlineAt, clock);
+        return { hash: result.hash, fee: currentFee };
       }
 
-      const builtTx = tx.setTimeout(30).build();
-      builtTx.sign(signer);
+      // Fee-bump attempt: the inner transaction keeps its own signature and the
+      // agent keypair signs the envelope as fee source. A fee-bump envelope
+      // cannot be rebuilt mid-flight, so no rebuild fn is passed.
+      const feeBumpTx = TransactionBuilder.buildFeeBumpTransaction(
+        signer,
+        currentFee,
+        innerTx,
+        STELLAR_NETWORK_PASSPHRASE,
+      );
+      feeBumpTx.sign(signer);
 
-      const result = await submitTransactionWithRetry(server, builtTx);
+      const result = await submitTransactionWithRetry(
+        server, feeBumpTx as any, 2, 35000, undefined, deadlineAt, clock,
+      );
       return { hash: result.hash, fee: currentFee };
     } catch (err: any) {
-      const resultCodes = err?.response?.data?.extras?.result_codes;
-      const isFeeError = resultCodes?.transaction === 'tx_insufficient_fee';
+      if (err instanceof RetryBudgetExceededError) throw err;
 
-      if (isFeeError && attempt < maxAttempts - 1) {
-        // Double the fee and retry
-        const newFee = Math.min(parseInt(currentFee) * 2, MAX_FEE_STROOPS);
-        logger.warn(
-          { oldFee: currentFee, newFee, attempt: attempt + 1 },
-          '[Stellar] Insufficient fee, retrying with higher fee',
-        );
-        currentFee = newFee.toString();
-        attempt++;
-        continue;
+      // Only an insufficient fee is worth bumping; anything else (tx_bad_auth,
+      // tx_bad_seq that already exhausted its own retries, …) propagates.
+      if (!isTxResultCode(err, "tx_insufficient_fee")) throw err;
+
+      attempt++;
+      if (attempt >= FEE_BUMP_MAX_ATTEMPTS) throw err;
+      if (clock.now() >= deadlineAt) {
+        throw new RetryBudgetExceededError(FEE_BUMP_BUDGET_MS);
       }
 
-      throw err;
+      const newFee = Math.min(parseInt(currentFee, 10) * 2, MAX_FEE_STROOPS);
+      logger.warn(
+        { oldFee: currentFee, newFee, attempt },
+        '[Stellar] Insufficient fee, wrapping in fee-bump envelope',
+      );
+      currentFee = newFee.toString();
+      stellarFeeBumpsTotal.inc();
     }
   }
 
@@ -220,17 +444,38 @@ async function waitForStellarSettlement(
 }
 
 // --- x402 Client: Auto-handles 402 Payment Required for API queries ---
-const x402Fetch = isMockNetwork()
-  ? fetch
-  : wrapFetchWithPayment(
+// Use stellar:testnet or stellar:public scheme based on STELLAR_NETWORK env.
+// getSigner() re-reads AGENT_SECRET_KEY on a 60s TTL so the key can be rotated
+// without a full process restart. SIGHUP triggers immediate cache invalidation
+// (zero-downtime reload). See docs/runbooks/rotate-agent-key.md.
+const x402SchemeId = `stellar:${STELLAR_CONFIG.networkType}` as `${string}:${string}`;
+export const X402_SIGNER_TTL_MS = 60_000;
+let _x402Fetch: typeof fetch | null = null;
+let _x402FetchCreatedAt = 0;
+
+export function getX402Fetch(): typeof fetch {
+  if (isMockNetwork()) return fetch;
+  const now = Date.now();
+  if (!_x402Fetch || now - _x402FetchCreatedAt > X402_SIGNER_TTL_MS) {
+    const key = process.env.AGENT_SECRET_KEY;
+    if (!key) throw new Error('AGENT_SECRET_KEY required');
+    _x402Fetch = wrapFetchWithPayment(
       fetch,
       new x402Client().register(
-        'stellar:testnet',
-        new ExactStellarScheme(
-          createEd25519Signer(AGENT_SECRET_KEY, 'stellar:testnet'),
-        ),
+        x402SchemeId,
+        new ExactStellarScheme(createEd25519Signer(key, x402SchemeId)),
       ),
     );
+    _x402FetchCreatedAt = now;
+  }
+  return _x402Fetch;
+}
+
+process.on('SIGHUP', () => {
+  _x402Fetch = null;
+  _x402FetchCreatedAt = 0;
+  logger.info('[x402] SIGHUP received — signer cache invalidated, will reload on next call');
+});
 
 // --- MPP Client: Auto-handles 402 for medication order payments ---
 // Use factory function to create client instance (supports DI for testing)
@@ -284,32 +529,62 @@ export function getMppClient(): MppClientInstance {
 }
 
 // --- Per-recipient data directories (Issue #261) ---
-const DATA_DIR = new URL('../data', import.meta.url).pathname;
+const DATA_DIR = process.env.DATA_DIR || fileURLToPath(new URL('../data', import.meta.url));
+export function getDataDir(): string {
+  return process.env.DATA_DIR || new URL('../data', import.meta.url).pathname;
+}
 
 let currentRecipientId = 'rosa';
 
 const DEFAULT_POLICY: SpendingPolicy = {
   dailyLimit: 100,
-  monthlyLimit: 500,
+  monthlyLimit: 800,
   medicationMonthlyBudget: 300,
   billMonthlyBudget: 500,
   approvalThreshold: 75,
   holdTimeSeconds: 0,
+  toolFees: {
+    comparePharmacyPrices: 0.002,
+    auditBill: 0.01,
+    checkDrugInteractions: 0.001,
+  },
   notifications: { email: false, sms: false },
 };
+
+// Helper: Get tool fee from policy, throw if not configured
+function getToolFee(toolName: string): number {
+  const policy = loadPolicy();
+  const fee = policy.toolFees?.[toolName];
+  if (fee === undefined || fee === null) {
+    throw new Error(
+      `Tool fee not configured for ${toolName}. Please add it to policy.toolFees in the spending policy.`,
+    );
+  }
+  return fee;
+}
 
 export function setCurrentRecipient(recipientId: string) {
   currentRecipientId = recipientId;
   const dir = getRecipientDir(recipientId);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  spendingTracker = loadSpending(recipientId);
+  currentPolicy = loadPolicy(recipientId);
 }
 export function getCurrentRecipient() { return currentRecipientId; }
 
 function getRecipientDir(recipientId: string): string {
-  return `${DATA_DIR}/recipients/${recipientId}`;
+  return `${getDataDir()}/recipients/${recipientId}`;
 }
 function getSpendingFile(recipientId?: string): string {
   return `${getRecipientDir(recipientId || currentRecipientId)}/spending.json`;
+}
+/** Append-only JSONL log — one line per transaction (Issue #205). */
+function getTransactionLogFile(recipientId?: string): string {
+  return `${getRecipientDir(recipientId || currentRecipientId)}/transactions.jsonl`;
+}
+/** Periodic compaction snapshot written every SNAPSHOT_INTERVAL transactions (Issue #205). */
+function getSnapshotFile(recipientId?: string): string {
+  return `${getRecipientDir(recipientId || currentRecipientId)}/spending.snapshot.json`;
 }
 function getPolicyFile(recipientId?: string): string {
   return `${getRecipientDir(recipientId || currentRecipientId)}/policy.json`;
@@ -320,8 +595,8 @@ function getOrdersFile(recipientId?: string): string {
 
 // Migrate legacy flat files to per-recipient structure (one-time)
 function migrateLegacyData() {
-  const legacySpending = `${DATA_DIR}/spending.json`;
-  const legacyOrders = `${DATA_DIR}/orders.json`;
+  const legacySpending = `${getDataDir()}/spending.json`;
+  const legacyOrders = `${getDataDir()}/orders.json`;
   const rosaDir = getRecipientDir('rosa');
   if (!existsSync(rosaDir)) mkdirSync(rosaDir, { recursive: true });
   if (existsSync(legacySpending) && !existsSync(`${rosaDir}/spending.json`)) {
@@ -338,7 +613,7 @@ function migrateLegacyData() {
 }
 migrateLegacyData();
 
-if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+if (!existsSync(getDataDir())) mkdirSync(getDataDir(), { recursive: true });
 if (!existsSync(getRecipientDir(currentRecipientId))) mkdirSync(getRecipientDir(currentRecipientId), { recursive: true });
 
 interface SpendingTracker {
@@ -346,31 +621,397 @@ interface SpendingTracker {
   bills: number;
   serviceFees: number;
   transactions: Transaction[];
+  /** Persisted month-to-date totals keyed by yearMonth (e.g. "2026-04").
+   *  On month boundary crossing, running totals are rotated so budget
+   *  enforcement always sees the current month's spend (Issue #208). */
+  monthTotals?: {
+    yearMonth: string;
+    medications: number;
+    bills: number;
+    serviceFees: number;
+  };
 }
 
-type SpendingPolicyInput = Partial<SpendingPolicy> & {
-  dailyLimit: number;
-  monthlyLimit: number;
-  medicationMonthlyBudget: number;
-  billMonthlyBudget: number;
-  approvalThreshold: number;
+const SpendingTrackerSchema = z.object({
+  medications: z.number(),
+  bills: z.number(),
+  serviceFees: z.number(),
+  // Accept both the legacy Transaction shape (timestamp/type/recipient/status)
+  // and the upstream shape (createdAt/metadata). normalizeTransactionCategories
+  // casts entries to Transaction after loading, so loose validation is intentional.
+  transactions: z.array(z.record(z.unknown())),
+  monthTotals: z.object({
+    yearMonth: z.string(),
+    medications: z.number(),
+    bills: z.number(),
+    serviceFees: z.number(),
+  }).optional(),
+});
+
+type PaymentCategory =
+  | typeof TRANSACTION_CATEGORY.MEDICATIONS
+  | typeof TRANSACTION_CATEGORY.BILLS;
+
+// Zod schema for spending policy — enforces positive values, sane upper bounds,
+// and cross-field ordering. holdTimeSeconds uses .min(0) because DEFAULT_POLICY sets it to 0.
+export const SpendingPolicySchema = z.object({
+  dailyLimit: z.number().gt(0, 'dailyLimit must be greater than 0').max(10_000, 'dailyLimit cannot exceed $10,000'),
+  monthlyLimit: z.number().gt(0, 'monthlyLimit must be greater than 0').max(100_000, 'monthlyLimit cannot exceed $100,000'),
+  medicationMonthlyBudget: z.number().gt(0, 'medicationMonthlyBudget must be greater than 0').max(50_000, 'medicationMonthlyBudget cannot exceed $50,000'),
+  billMonthlyBudget: z.number().gt(0, 'billMonthlyBudget must be greater than 0').max(50_000, 'billMonthlyBudget cannot exceed $50,000'),
+  approvalThreshold: z.number().gt(0, 'approvalThreshold must be greater than 0').max(10_000, 'approvalThreshold cannot exceed $10,000'),
+  holdTimeSeconds: z.number().min(0).max(86_400).default(0),
+  timezone: z.string().optional(),
+  toolFees: z.record(z.number().min(0)).optional(),
+  notifications: z.object({
+    email: z.boolean(),
+    sms: z.boolean(),
+    emailAddress: z.string().email().optional(),
+    phoneNumber: z.string().optional(),
+  }).optional(),
+}).refine(
+  (p) => p.dailyLimit <= p.monthlyLimit,
+  { message: 'dailyLimit cannot exceed monthlyLimit', path: ['dailyLimit'] },
+).refine(
+  (p) => p.approvalThreshold <= p.dailyLimit,
+  { message: 'approvalThreshold cannot exceed dailyLimit', path: ['approvalThreshold'] },
+).refine(
+  (p) => p.medicationMonthlyBudget + p.billMonthlyBudget <= p.monthlyLimit,
+  { message: 'medicationMonthlyBudget + billMonthlyBudget cannot exceed monthlyLimit', path: ['medicationMonthlyBudget'] },
+);
+
+type SpendingPolicyInput = z.infer<typeof SpendingPolicySchema>;
+
+const SPENDING_CACHE_TTL_MS = 5000;
+/** Compact the JSONL log into a snapshot every this many transactions (Issue #205). */
+export const SNAPSHOT_INTERVAL = 100;
+
+type SpendingCacheEntry = {
+  data: SpendingTracker;
+  loadedAt: number;
 };
 
-function loadSpending(recipientId?: string): SpendingTracker {
-  const file = getSpendingFile(recipientId);
-  if (!existsSync(file)) return { medications: 0, bills: 0, serviceFees: 0, transactions: [] };
-  return JSON.parse(readFileSync(file, 'utf-8'));
+const spendingCache = new Map<string, SpendingCacheEntry>();
+
+function createEmptySpendingTracker(): SpendingTracker {
+  return {
+    medications: 0,
+    bills: 0,
+    serviceFees: 0,
+    transactions: [],
+    monthTotals: {
+      yearMonth: getCurrentYearMonth(),
+      medications: 0,
+      bills: 0,
+      serviceFees: 0,
+    },
+  };
 }
 
+function getCurrentYearMonth(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function rotateMonthIfNeeded(tracker: SpendingTracker): boolean {
+  const current = getCurrentYearMonth();
+  const stored = tracker.monthTotals?.yearMonth;
+  if (stored === current) return false;
+  // Month boundary crossed — rotate running totals
+  tracker.monthTotals = {
+    yearMonth: current,
+    medications: 0,
+    bills: 0,
+    serviceFees: 0,
+  };
+  tracker.medications = 0;
+  tracker.bills = 0;
+  tracker.serviceFees = 0;
+  logger.info({ from: stored, to: current }, '[Budget] Month boundary rotated spending totals');
+  return true;
+}
+
+function normalizeTransactionCategories(
+  data: SpendingTracker,
+  recipientId?: string,
+): { data: SpendingTracker; migrated: boolean } {
+  let migrated = false;
+  const transactions = (data.transactions || []).map((tx: any) => {
+    if (isTransactionCategory(tx.category)) return tx as Transaction;
+
+    migrated = true;
+    const previousCategory = tx.category;
+    const normalizedTx = {
+      ...tx,
+      category: normalizeTransactionCategory(tx.category),
+    } as Transaction;
+    appendAuditEntry({
+      event: 'transaction.category_migrated',
+      actor: 'system',
+      details: {
+        recipientId: recipientId || currentRecipientId,
+        transactionId: tx.id,
+        previousCategory,
+        currentCategory: TRANSACTION_CATEGORY.SERVICE_FEES,
+      },
+    });
+    return normalizedTx;
+  });
+
+  return {
+    data: { ...data, transactions },
+    migrated,
+  };
+}
+
+/**
+ * Read spending state from disk using the snapshot + JSONL tail strategy (Issue #205).
+ *
+ * Load order:
+ *  1. spending.snapshot.json  — compacted base state
+ *  2. transactions.jsonl tail — lines appended after the snapshot was written
+ *  3. spending.json fallback   — legacy full-file for backward compatibility
+ */
+function readSpendingFromDisk(recipientId?: string): SpendingTracker {
+  const snapshotFile = getSnapshotFile(recipientId);
+  const logFile = getTransactionLogFile(recipientId);
+  const legacyFile = getSpendingFile(recipientId);
+
+  // --- Try new snapshot + JSONL tail path first ---
+  if (existsSync(snapshotFile)) {
+    try {
+      const raw = readFileSync(snapshotFile, 'utf-8');
+      let parsed: any;
+      try {
+        parsed = JSON.parse(raw);
+      } catch (parseErr) {
+        logger.warn({ file: snapshotFile }, '[Persistence] JSON parse failed on snapshot');
+        rotateCorruptedFile(snapshotFile);
+        throw parseErr;
+      }
+
+      const validated = SpendingTrackerSchema.safeParse(parsed);
+      if (!validated.success) {
+        logger.warn({ file: snapshotFile, errors: validated.error.errors }, '[Persistence] Snapshot schema invalid');
+        rotateCorruptedFile(snapshotFile);
+        throw new Error('Snapshot schema validation failed');
+      }
+
+      const snapshot = validated.data as unknown as SpendingTracker & { _snapshotTxCount?: number };
+      const snapshotTxCount = (parsed as any)._snapshotTxCount ?? snapshot.transactions.length;
+
+      // Replay transactions from the JSONL tail that came after the snapshot
+      const tailTxs: Transaction[] = [];
+      if (existsSync(logFile)) {
+        const raw = readFileSync(logFile, 'utf-8');
+        const lines = raw.split('\n').filter((l) => l.trim().length > 0);
+        // Skip the lines already captured in the snapshot
+        for (let i = snapshotTxCount; i < lines.length; i++) {
+          try {
+            tailTxs.push(JSON.parse(lines[i]) as Transaction);
+          } catch {
+            logger.warn({ line: i }, '[Persistence] Skipping malformed JSONL line');
+          }
+        }
+      }
+
+      const merged: SpendingTracker = {
+        medications: snapshot.medications,
+        bills: snapshot.bills,
+        serviceFees: snapshot.serviceFees,
+        transactions: [...snapshot.transactions, ...tailTxs],
+      };
+      const normalized = normalizeTransactionCategories(merged, recipientId);
+      if (normalized.migrated) {
+        saveSpending(normalized.data, recipientId);
+      }
+      return normalized.data;
+    } catch (err: any) {
+      logger.warn(
+        { file: snapshotFile, error: err.message },
+        '[Persistence] spending.snapshot.json is corrupted; falling back to legacy file',
+      );
+    }
+  }
+
+  // --- Legacy fallback: spending.json (full JSON blob) ---
+  if (!existsSync(legacyFile)) return createEmptySpendingTracker();
+  try {
+    const raw = readFileSync(legacyFile, 'utf-8');
+    let parsed: any;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (parseErr) {
+      logger.error({ file: legacyFile }, '[Persistence] JSON parse failed on spending.json');
+      const rotated = rotateCorruptedFile(legacyFile);
+      logger.error({ rotatedPath: rotated }, '[Persistence] CRITICAL: Corrupted spending file rotated, starting fresh');
+      return createEmptySpendingTracker();
+    }
+
+    const validated = SpendingTrackerSchema.safeParse(parsed);
+    if (!validated.success) {
+      logger.error({ file: legacyFile, errors: validated.error.errors }, '[Persistence] spending.json schema invalid');
+      const rotated = rotateCorruptedFile(legacyFile);
+      logger.error({ rotatedPath: rotated }, '[Persistence] CRITICAL: Invalid spending schema, starting fresh');
+      return createEmptySpendingTracker();
+    }
+
+    const normalized = normalizeTransactionCategories(validated.data as unknown as SpendingTracker, recipientId);
+    if (normalized.migrated) {
+      saveSpending(normalized.data, recipientId);
+    }
+    return normalized.data;
+  } catch (err: any) {
+    logger.error(
+      { file: legacyFile, error: err.message },
+      '[Persistence] CRITICAL: Unexpected error loading spending.json',
+    );
+    return createEmptySpendingTracker();
+  }
+}
+
+export function loadSpending(recipientId?: string): SpendingTracker {
+  const resolvedRecipientId = recipientId || currentRecipientId;
+  const cached = spendingCache.get(resolvedRecipientId);
+  const now = Date.now();
+
+  if (cached && now - cached.loadedAt < SPENDING_CACHE_TTL_MS) {
+    return cached.data;
+  }
+
+  const data = readSpendingFromDisk(resolvedRecipientId);
+  spendingCache.set(resolvedRecipientId, { data, loadedAt: now });
+  return data;
+}
+
+/**
+ * Append a single transaction as one JSON line to transactions.jsonl (Issue #205).
+ * This is O(1) per call — no full-file rewrite.
+ * Also triggers compaction every SNAPSHOT_INTERVAL transactions.
+ */
+export function appendTransaction(tx: Transaction, recipientId?: string): void {
+  const logFile = getTransactionLogFile(recipientId);
+  appendFileSync(logFile, JSON.stringify(tx) + '\n', 'utf-8');
+
+  // Compact into a snapshot every SNAPSHOT_INTERVAL transactions
+  const totalTxs = spendingTracker.transactions.length;
+  if (totalTxs > 0 && totalTxs % SNAPSHOT_INTERVAL === 0) {
+    compactSnapshot(spendingTracker, recipientId);
+  }
+}
+
+/**
+ * Write a periodic compaction snapshot so the JSONL tail stays short (Issue #205).
+ * Uses an atomic rename to avoid partial writes.
+ */
+export function compactSnapshot(data: SpendingTracker, recipientId?: string): void {
+  const snapshotFile = getSnapshotFile(recipientId);
+  const payload = {
+    ...data,
+    // Record how many JSONL lines this snapshot covers so the read path
+    // knows where the tail starts.
+    _snapshotTxCount: data.transactions.length,
+  };
+  writeAtomically(snapshotFile, JSON.stringify(payload, null, 2));
+  logger.info(
+    { txCount: data.transactions.length, recipientId: recipientId || currentRecipientId },
+    '[Persistence] Compacted spending snapshot',
+  );
+}
+
+/**
+ * Full save: writes the legacy spending.json for backward compatibility and
+ * also seeds the snapshot + JSONL files if they don't exist yet (Issue #205).
+ */
 export function saveSpending(data: SpendingTracker, recipientId?: string) {
+  // 1. Legacy full-file (backward compat for external tooling)
   const file = getSpendingFile(recipientId);
-  writeFileSync(file, JSON.stringify(data, null, 2));
+  writeAtomically(file, JSON.stringify(data, null, 2));
+
+  // 2. Write / refresh the snapshot file so the new read path can find state
+  compactSnapshot(data, recipientId);
+
+  // 3. Seed the JSONL log with all current transactions if it doesn't exist
+  const logFile = getTransactionLogFile(recipientId);
+  if (!existsSync(logFile)) {
+    const lines = data.transactions.map((tx) => JSON.stringify(tx)).join('\n');
+    writeFileSync(logFile, lines.length > 0 ? lines + '\n' : '', 'utf-8');
+  }
+
+  spendingCache.set(recipientId || currentRecipientId, {
+    data,
+    loadedAt: Date.now(),
+  });
 }
 
 let spendingTracker = loadSpending();
 
+// --- Budget mutex (Issue #209) ---
+// Consistency model: per-process, per-recipient.
+//   Within a single Node.js process the mutex makes the check-and-reserve step
+//   atomic: no two concurrent payForMedication / payBill calls can both pass the
+//   budget check when only one slot remains.
+// Cross-process: if you run multiple server replicas sharing the same data
+//   directory, wrap the spending file read-modify-write with proper-lockfile
+//   (already a dependency) instead of this in-memory mutex.
+class AsyncMutex {
+  private _locked = false;
+  private _queue: Array<() => void> = [];
+
+  acquire(): Promise<() => void> {
+    return new Promise((resolve) => {
+      const release = () => {
+        const next = this._queue.shift();
+        if (next) next();
+        else this._locked = false;
+      };
+      if (this._locked) {
+        this._queue.push(() => resolve(release));
+      } else {
+        this._locked = true;
+        resolve(release);
+      }
+    });
+  }
+}
+
+const _budgetMutexes = new Map<string, AsyncMutex>();
+function getBudgetMutex(recipientId: string): AsyncMutex {
+  let m = _budgetMutexes.get(recipientId);
+  if (!m) { m = new AsyncMutex(); _budgetMutexes.set(recipientId, m); }
+  return m;
+}
+
+// Per-keypair mutex to serialize Stellar submissions (Issue #XXX).
+// Prevents concurrent payBill calls from loading the same sequence number.
+const _submissionMutexes = new Map<string, AsyncMutex>();
+function getSubmissionMutex(keypairId: string): AsyncMutex {
+  let m = _submissionMutexes.get(keypairId);
+  if (!m) { m = new AsyncMutex(); _submissionMutexes.set(keypairId, m); }
+  return m;
+}
+
 const MAX_PAYMENT = 1000;
+// Platform-level single-transaction cap (issue #83). Sits above the caregiver policy's
+// approvalThreshold so a compromised session cannot bypass it. Only changeable by redeploying.
+// Read on every call so tests can override process.env.MAX_SINGLE_TX_USDC between runs.
+function getPlatformTxCap(): number {
+  return parseFloat(process.env.MAX_SINGLE_TX_USDC ?? '100');
+}
+
+// Budget values are rounded to 4 decimal places to eliminate float underflow (issue #287).
+// 4 dp = sub-cent precision; values within 0.5/BUDGET_SCALE of zero collapse cleanly to zero.
+const BUDGET_SCALE = 10_000;
+function roundBudget(v: number): number {
+  return Math.round(v * BUDGET_SCALE) / BUDGET_SCALE;
+}
+
 const MAX_ERROR_LENGTH = 500;
+
+// --- Metric: count sequence-number retries in payBill (#197 / #282) ---
+let paybillSeqRetryTotal = 0;
+export function getPaybillSeqRetryTotal(): number { return paybillSeqRetryTotal; }
+export function resetPaybillSeqRetryTotal(): void { paybillSeqRetryTotal = 0; }
 
 function truncateError(message: string): string {
   return message.replace(/<[^>]*>/g, '').slice(0, MAX_ERROR_LENGTH);
@@ -381,10 +1022,12 @@ function recordServiceFee(
   description: string,
   recipient: string,
   stellarTxHash?: string,
+  txHashStatus?: 'extracted' | 'extraction_failed',
 ) {
+  rotateMonthIfNeeded(spendingTracker);
   x402SettlementsTotal.inc();
   spendingTracker.serviceFees += amount;
-  spendingTracker.transactions.push({
+  const tx: Transaction = {
     id: `tx-${Date.now()}`,
     timestamp: new Date().toISOString(),
     type: 'service_fee',
@@ -392,26 +1035,98 @@ function recordServiceFee(
     amount,
     recipient,
     stellarTxHash,
+    txHashStatus,
     status: 'completed',
-    category: 'service_fees',
-  });
+    category: TRANSACTION_CATEGORY.SERVICE_FEES,
+  };
+  spendingTracker.transactions.push(tx);
   agentTransactionsTotal.inc({ status: 'completed' });
   agentSpendingUsd.set(
-    { category: 'service_fees' },
+    { category: TRANSACTION_CATEGORY.SERVICE_FEES },
     spendingTracker.serviceFees,
   );
-  saveSpending(spendingTracker);
+  // Append the single transaction — O(1) — instead of rewriting the whole file
+  appendTransaction(tx);
+}
+
+/**
+ * Atomically apply a spending delta under the per-recipient budget mutex (Issue #17).
+ *
+ * The check-and-reserve is performed inside the same mutex lock that
+ * payForMedication / payBill acquire, so concurrent calls cannot both pass the
+ * budget gate when only one slot remains.
+ *
+ * @returns `{ ok: true }` if the delta was applied, or `{ ok: false, reason }` if
+ *          the budget would be exceeded after applying `delta`.
+ */
+export async function updateSpending(
+  category: 'medications' | 'bills' | 'serviceFees',
+  delta: number,
+  recipientId?: string,
+): Promise<{ ok: boolean; reason?: string }> {
+  const rid = recipientId ?? currentRecipientId;
+  const release = await getBudgetMutex(rid).acquire();
+  try {
+    // Reload from disk so this call always sees updates made by other paths
+    const tracker = loadSpending(rid);
+    const policy = loadPolicy(rid);
+
+    const current = tracker[category];
+    const limit =
+      category === 'medications'
+        ? policy.medicationMonthlyBudget
+        : category === 'bills'
+          ? policy.billMonthlyBudget
+          : Infinity;
+    const totalSpent =
+      tracker.medications + tracker.bills + tracker.serviceFees;
+    const globalRemaining = roundBudget(policy.monthlyLimit - totalSpent);
+
+    if (roundBudget(current + delta) > limit) {
+      policyBlocksTotal.inc();
+      return {
+        ok: false,
+        reason: `$${delta.toFixed(2)} would exceed ${category} monthly budget ($${limit}; spent $${current.toFixed(2)})`,
+      };
+    }
+    if (delta > globalRemaining) {
+      policyBlocksTotal.inc();
+      return {
+        ok: false,
+        reason: `$${delta.toFixed(2)} would exceed overall monthly limit ($${policy.monthlyLimit}; remaining $${globalRemaining.toFixed(2)})`,
+      };
+    }
+
+    tracker[category] = roundBudget(current + delta);
+    saveSpending(tracker);
+    // Keep module-level var in sync for same-process reads
+    spendingTracker = tracker;
+    return { ok: true };
+  } finally {
+    release();
+  }
 }
 
 function loadPolicy(recipientId?: string): SpendingPolicy {
   const file = getPolicyFile(recipientId);
   if (!existsSync(file)) return { ...DEFAULT_POLICY };
-  try { return JSON.parse(readFileSync(file, 'utf-8')); }
-  catch { return { ...DEFAULT_POLICY }; }
+  try {
+    return JSON.parse(readFileSync(file, 'utf-8'));
+  } catch (err: any) {
+    logger.warn(
+      { file, error: err.message },
+      '[Persistence] policy.json is corrupted; falling back to the default policy',
+    );
+    return { ...DEFAULT_POLICY };
+  }
 }
 
 function savePolicy(policy: SpendingPolicy, recipientId?: string) {
   writeFileSync(getPolicyFile(recipientId), JSON.stringify(policy, null, 2));
+}
+
+function assertValidSpendingPolicy(policy: SpendingPolicy) {
+  SpendingPolicySchema.parse(policy);
 }
 
 let currentPolicy: SpendingPolicy = loadPolicy();
@@ -440,6 +1155,7 @@ export function setSpendingPolicy(
       sms: policy.notifications?.sms ?? false,
     },
   };
+  assertValidSpendingPolicy(normalizedPolicy);
   const previous = currentPolicy;
   currentPolicy = normalizedPolicy;
   savePolicy(normalizedPolicy);
@@ -458,7 +1174,11 @@ export function setSpendingPolicy(
   });
 }
 export function getSpendingTracker(): any {
-  return { ...spendingTracker, policy: currentPolicy };
+  // Return the latest disk-backed policy rather than the potentially stale
+  // module-level `currentPolicy` so multi-instance deployments observe
+  // updates made via the caregiver HTTP API.
+  const policy = loadPolicy();
+  return { ...spendingTracker, policy };
 }
 export function resetSpendingTracker(recipientId?: string) {
   if (recipientId) {
@@ -486,9 +1206,11 @@ export function resetSpendingTracker(recipientId?: string) {
 export async function comparePharmacyPrices(
   drugName: string,
   zipCode: string = '90210',
+  dosage: string = 'unspecified',
 ) {
-  const url = `${PHARMACY_API}/pharmacy/compare?drug=${encodeURIComponent(drugName)}&zip=${encodeURIComponent(zipCode)}`;
-  logger.info({ drug: drugName }, '[x402] paying for pharmacy price query');
+  const url = `${PHARMACY_API}/pharmacy/compare?drug=${encodeURIComponent(drugName)}&dosage=${encodeURIComponent(dosage)}&zip=${encodeURIComponent(zipCode)}`;
+  const fee = getToolFee('comparePharmacyPrices');
+  logger.info({ drug: drugName, fee }, '[x402] paying for pharmacy price query');
 
   if (isMockNetwork()) {
     const receipt = createMockReceipt('x402:pharmacy-prices', {
@@ -497,11 +1219,14 @@ export async function comparePharmacyPrices(
     });
     const data = {
       drug: drugName,
+      dosage,
       zipCode,
+      usedZipCode: zipCode === '10001' || zipCode === '33101' ? zipCode : '90210',
+      isFallbackZip: zipCode !== '90210' && zipCode !== '10001' && zipCode !== '33101',
       protocol: {
         name: 'x402',
         mockNetwork: true,
-        price: '$0.002',
+        price: `$${fee.toFixed(3)}`,
         payTo: 'mock-pharmacy-price-api',
         receipt,
       },
@@ -536,7 +1261,7 @@ export async function comparePharmacyPrices(
       savingsPercent: 56.4,
     };
     recordServiceFee(
-      0.002,
+      fee,
       `x402 query: pharmacy prices for ${drugName}`,
       'mock-pharmacy-price-api',
       receipt.stellarTxHash,
@@ -544,7 +1269,7 @@ export async function comparePharmacyPrices(
     return data;
   }
 
-  const response = await x402Fetch(url);
+  const response = await getX402Fetch()(url);
 
   if (!response.ok) {
     const error = await response.text();
@@ -553,10 +1278,19 @@ export async function comparePharmacyPrices(
     );
   }
 
-  const data = await response.json();
+  let data;
+  try {
+    data = await response.json();
+  } catch (err) {
+    return { ok: false, reason: 'MALFORMED_RESPONSE' };
+  }
 
   // Extract real Stellar tx hash from x402 payment response header
-  const txHash = extractX402TxHash(response);
+  const txHashResult = extractX402TxHash(response);
+  const txHash = txHashResult === TX_HASH_EXTRACTION_FAILED ? undefined : txHashResult;
+  const txHashStatus = txHashResult === TX_HASH_EXTRACTION_FAILED
+    ? 'extraction_failed' as const
+    : txHash ? 'extracted' as const : undefined;
 
   // Wait for on-chain settlement before recording the fee
   if (txHash) {
@@ -569,18 +1303,20 @@ export async function comparePharmacyPrices(
   }
 
   recordServiceFee(
-    0.002,
+    fee,
     `x402 query: pharmacy prices for ${drugName}`,
     data.protocol?.payTo || 'pharmacy-price-api',
     txHash,
+    txHashStatus,
   );
 
   return data;
 }
 
 // --- Tool: Fetch Rosa's hospital bill (free endpoint, no x402 payment) ---
-export async function fetchRosaBill() {
-  logger.info("[fetch] getting Rosa's hospital bill");
+export async function fetchRosaBill(recipientId?: string) {
+  const rid = recipientId ?? currentRecipientId;
+  logger.info({ recipientId: rid }, '[fetch] getting care recipient bill');
 
   if (isMockNetwork()) {
     return {
@@ -598,7 +1334,9 @@ export async function fetchRosaBill() {
     };
   }
 
-  const response = await fetch(`${BILL_AUDIT_API}/bill/sample`);
+  const url = new URL(`${BILL_AUDIT_API}/bill/sample`);
+  if (rid) url.searchParams.set('recipientId', rid);
+  const response = await fetch(url.toString());
 
   if (!response.ok) {
     throw new Error(
@@ -606,15 +1344,20 @@ export async function fetchRosaBill() {
     );
   }
 
-  return await response.json();
+  try {
+    return await response.json();
+  } catch (err) {
+    return { ok: false, reason: 'MALFORMED_RESPONSE' };
+  }
 }
 
-// --- Tool: Fetch Rosa's bill AND audit it in one step (pays via x402) ---
-export async function fetchAndAuditBill() {
-  logger.info("[fetch+audit] getting Rosa's bill and auditing it");
+// --- Tool: Fetch care recipient's bill AND audit it in one step (pays via x402) ---
+export async function fetchAndAuditBill(recipientId?: string) {
+  const rid = recipientId ?? currentRecipientId;
+  logger.info({ recipientId: rid }, "[fetch+audit] getting care recipient bill and auditing it");
 
   // Step 1: Fetch the bill (free)
-  const bill = await fetchRosaBill();
+  const bill = await fetchRosaBill(rid);
 
   // Step 2: Audit it (pays via x402)
   return await auditBill(bill.lineItems);
@@ -622,15 +1365,26 @@ export async function fetchAndAuditBill() {
 
 // --- Tool: Audit a medical bill (pays via x402) ---
 export async function auditBill(
-  lineItems: Array<{
-    description: string;
-    cptCode: string;
-    quantity: number;
-    chargedAmount: number;
-  }>,
+  lineItemsInput: unknown,
 ) {
+  let lineItems: LineItem[];
+  try {
+    lineItems = validateLineItems(lineItemsInput);
+  } catch (error) {
+    if (error instanceof BillAuditValidationError) {
+      return {
+        ok: false,
+        reason: error.code,
+        message: error.message,
+        issues: error.issues,
+      };
+    }
+    throw error;
+  }
+
+  const fee = getToolFee('auditBill');
   logger.info(
-    { lineItemCount: lineItems.length },
+    { lineItemCount: lineItems.length, fee },
     '[x402] paying for bill audit',
   );
 
@@ -645,7 +1399,7 @@ export async function auditBill(
       protocol: {
         name: 'x402',
         mockNetwork: true,
-        price: '$0.01',
+        price: `$${fee.toFixed(2)}`,
         payTo: 'mock-bill-audit-api',
         receipt,
       },
@@ -663,7 +1417,7 @@ export async function auditBill(
       recommendation: 'Mock network audit completed. No errors detected.',
     };
     recordServiceFee(
-      0.01,
+      fee,
       'x402 query: medical bill audit',
       'mock-bill-audit-api',
       receipt.stellarTxHash,
@@ -673,7 +1427,7 @@ export async function auditBill(
 
   let response: Response;
   try {
-    response = await x402Fetch(`${BILL_AUDIT_API}/bill/audit`, {
+    response = await getX402Fetch()(`${BILL_AUDIT_API}/bill/audit`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ lineItems }),
@@ -737,9 +1491,18 @@ export async function auditBill(
     );
   }
 
-  const data = await response.json();
+  let data;
+  try {
+    data = await response.json();
+  } catch (err) {
+    return { ok: false, reason: 'MALFORMED_RESPONSE' };
+  }
 
-  const txHash = extractX402TxHash(response);
+  const txHashResult = extractX402TxHash(response);
+  const txHash = txHashResult === TX_HASH_EXTRACTION_FAILED ? undefined : txHashResult;
+  const txHashStatus = txHashResult === TX_HASH_EXTRACTION_FAILED
+    ? 'extraction_failed' as const
+    : txHash ? 'extracted' as const : undefined;
 
   // Wait for on-chain settlement before recording the fee
   if (txHash) {
@@ -756,6 +1519,7 @@ export async function auditBill(
     'x402 query: medical bill audit',
     data.protocol?.payTo || 'bill-audit-api',
     txHash,
+    txHashStatus,
   );
 
   return data;
@@ -763,9 +1527,20 @@ export async function auditBill(
 
 // --- Tool: Check drug interactions (pays via x402) ---
 export async function checkDrugInteractions(medications: string[]) {
+  if (medications.length < 2) {
+    return {
+      ok: false,
+      reason: 'NEED_AT_LEAST_TWO_MEDS',
+      message: 'Drug interaction checks require at least 2 medications.',
+      receivedMedications: medications.length,
+      requiredMedications: 2,
+    };
+  }
+
   const medsParam = medications.join(',');
+  const fee = getToolFee('checkDrugInteractions');
   logger.info(
-    { medicationCount: medications.length },
+    { medicationCount: medications.length, fee },
     '[x402] paying for drug interaction check',
   );
 
@@ -778,7 +1553,7 @@ export async function checkDrugInteractions(medications: string[]) {
       protocol: {
         name: 'x402',
         mockNetwork: true,
-        price: '$0.001',
+        price: `$${fee.toFixed(3)}`,
         payTo: 'mock-drug-interaction-api',
         receipt,
       },
@@ -786,7 +1561,7 @@ export async function checkDrugInteractions(medications: string[]) {
       summary: 'Mock network interaction check completed. No interactions detected.',
     };
     recordServiceFee(
-      0.001,
+      fee,
       `x402 query: drug interactions for ${medications.join(', ')}`,
       'mock-drug-interaction-api',
       receipt.stellarTxHash,
@@ -794,8 +1569,10 @@ export async function checkDrugInteractions(medications: string[]) {
     return data;
   }
 
-  const response = await x402Fetch(
-    `${DRUG_INTERACTION_API}/drug/interactions?meds=${encodeURIComponent(medsParam)}`,
+  const response = await getX402Fetch()(
+    `${DRUG_INTERACTION_API}/drug/interactions?meds=${encodeURIComponent(
+      medications.join(','),
+    )}`,
   );
 
   if (!response.ok) {
@@ -805,9 +1582,18 @@ export async function checkDrugInteractions(medications: string[]) {
     );
   }
 
-  const data = await response.json();
+  let data;
+  try {
+    data = await response.json();
+  } catch (err) {
+    return { ok: false, reason: 'MALFORMED_RESPONSE' };
+  }
 
-  const txHash = extractX402TxHash(response);
+  const txHashResult = extractX402TxHash(response);
+  const txHash = txHashResult === TX_HASH_EXTRACTION_FAILED ? undefined : txHashResult;
+  const txHashStatus = txHashResult === TX_HASH_EXTRACTION_FAILED
+    ? 'extraction_failed' as const
+    : txHash ? 'extracted' as const : undefined;
 
   // Wait for on-chain settlement before recording the fee
   if (txHash) {
@@ -820,10 +1606,11 @@ export async function checkDrugInteractions(medications: string[]) {
   }
 
   recordServiceFee(
-    0.001,
+    fee,
     `x402 query: drug interactions for ${medications.join(', ')}`,
     data.protocol?.payTo || 'drug-interaction-api',
     txHash,
+    txHashStatus,
   );
 
   return data;
@@ -832,17 +1619,64 @@ export async function checkDrugInteractions(medications: string[]) {
 // --- Tool: Check spending policy ---
 export function checkSpendingPolicy(
   amount: number,
-  category: 'medications' | 'bills',
+  category: PaymentCategory,
 ) {
+  // Always load the latest policy from disk so multi-instance deployments
+  // pick up caregiver updates performed via POST /agent/policy.
+  const policy = loadPolicy();
   const budget =
-    category === 'medications'
-      ? currentPolicy.medicationMonthlyBudget
-      : currentPolicy.billMonthlyBudget;
+    category === TRANSACTION_CATEGORY.MEDICATIONS
+      ? policy.medicationMonthlyBudget
+      : policy.billMonthlyBudget;
   const currentSpending =
-    category === 'medications'
+    category === TRANSACTION_CATEGORY.MEDICATIONS
       ? spendingTracker.medications
       : spendingTracker.bills;
-  const remaining = budget - currentSpending;
+  const remaining = roundBudget(budget - currentSpending);
+  const totalMonthlySpending =
+    spendingTracker.medications +
+    spendingTracker.bills +
+    spendingTracker.serviceFees;
+  const globalRemaining = roundBudget(policy.monthlyLimit - totalMonthlySpending);
+
+  // Compute today's spend in this category up-front so every return path can
+  // report the remaining daily budget to the caller (Issue #160). Use the
+  // policy's per-recipient timezone if set; fall back to the global
+  // SPENDING_TIMEZONE env var so caregivers in non-UTC locales see the correct
+  // "today" boundary for their wall clock (Issue #207).
+  const effectiveTz = policy.timezone ?? SPENDING_TIMEZONE;
+  const { dayStart, dayEnd } = getLocalDayBounds(effectiveTz);
+  const dayStartMs = dayStart.getTime();
+  const dayEndMs = dayEnd.getTime();
+  const totalToday = spendingTracker.transactions
+    .filter(
+      (t) => {
+        const txTimestamp = new Date(t.timestamp).getTime();
+        return (
+          Number.isFinite(txTimestamp) &&
+          txTimestamp >= dayStartMs &&
+          txTimestamp < dayEndMs &&
+          t.category === category
+        );
+      },
+    )
+    .reduce((sum, t) => sum + t.amount, 0);
+  const dailyRemaining = roundBudget(policy.dailyLimit - totalToday);
+  // monthlyRemaining is the budget still available for this category this month.
+  const monthlyRemaining = remaining;
+
+  if (amount > globalRemaining) {
+    return {
+      allowed: false,
+      reason: `Payment of $${amount.toFixed(2)} would exceed overall monthly limit. Monthly limit: $${policy.monthlyLimit}, spent: $${totalMonthlySpending.toFixed(2)}, remaining: $${globalRemaining.toFixed(2)}`,
+      requiresApproval: false,
+      currentSpending,
+      budgetRemaining: remaining,
+      globalBudgetRemaining: globalRemaining,
+      dailyRemaining,
+      monthlyRemaining,
+    };
+  }
 
   if (amount > remaining) {
     return {
@@ -851,33 +1685,30 @@ export function checkSpendingPolicy(
       requiresApproval: false,
       currentSpending,
       budgetRemaining: remaining,
+      dailyRemaining,
+      monthlyRemaining,
     };
   }
 
-  const today = getLocalDateStr(SPENDING_TIMEZONE);
-  const totalToday = spendingTracker.transactions
-    .filter(
-      (t) =>
-        getLocalDateStr(SPENDING_TIMEZONE, new Date(t.timestamp)) === today &&
-        t.category === category,
-    )
-    .reduce((sum, t) => sum + t.amount, 0);
-
-  if (totalToday + amount > currentPolicy.dailyLimit) {
+  if (totalToday + amount > policy.dailyLimit) {
     return {
       allowed: false,
-      reason: `Payment of $${amount.toFixed(2)} would exceed daily limit of $${currentPolicy.dailyLimit}. Already spent today: $${totalToday.toFixed(2)}`,
+      reason: `Payment of $${amount.toFixed(2)} would exceed daily limit of $${policy.dailyLimit}. Already spent today: $${totalToday.toFixed(2)}`,
       requiresApproval: false,
       currentSpending,
       budgetRemaining: remaining,
+      dailyRemaining,
+      monthlyRemaining,
     };
   }
 
   return {
     allowed: true,
-    requiresApproval: amount > currentPolicy.approvalThreshold,
+    requiresApproval: amount >= policy.approvalThreshold,
     currentSpending,
-    budgetRemaining: remaining - amount,
+    budgetRemaining: roundBudget(remaining - amount),
+    dailyRemaining,
+    monthlyRemaining,
   };
 }
 
@@ -894,7 +1725,6 @@ async function executeMedicationPayment(
 
   let stellarTxHash: string | undefined;
   let mppOrderId: string | undefined;
-  const previousMppTxHash = mppClient.lastTxHash;
 
   if (isMockNetwork()) {
     const receipt = createMockReceipt('mpp:medication-order', {
@@ -926,36 +1756,55 @@ async function executeMedicationPayment(
       },
     );
 
-    const data = await response.json();
+    let data;
+    try {
+      data = await response.json();
+    } catch (err) {
+      return { ok: false, reason: 'MALFORMED_RESPONSE' };
+    }
     if (!data.success) {
       throw new Error(data.error || 'MPP payment failed');
     }
 
-    stellarTxHash =
-      mppClient.lastTxHash && mppClient.lastTxHash !== previousMppTxHash
-        ? mppClient.lastTxHash
-        : undefined;
-    if (!stellarTxHash) {
-      const receiptHeader =
-        response.headers.get('Payment-Receipt') ||
-        response.headers.get('payment-receipt');
-      if (receiptHeader) {
-        try {
-          const receipt = JSON.parse(
-            Buffer.from(receiptHeader, 'base64').toString(),
-          );
-          stellarTxHash =
-            receipt.reference || receipt.hash || receipt.transaction;
-        } catch {
-          stellarTxHash = receiptHeader;
-        }
+    // Prefer an explicit receipt provided in the HTTP response headers
+    // (Payment-Receipt) or in the JSON body. Do NOT rely on a module-level
+    // `lastTxHash` value because parallel payments can race and overwrite
+    // that shared state.
+    const receiptHeader =
+      response.headers.get('Payment-Receipt') || response.headers.get('payment-receipt');
+    if (receiptHeader) {
+      try {
+        const receipt = JSON.parse(Buffer.from(receiptHeader, 'base64').toString());
+        stellarTxHash = receipt.reference || receipt.hash || receipt.transaction || receipt.stellarTxHash;
+      } catch {
+        // If header is not base64 JSON, treat it as a raw hash
+        stellarTxHash = receiptHeader;
       }
+    }
+
+    // Fallbacks from body
+    if (!stellarTxHash && data.receipt) {
+      stellarTxHash = data.receipt.stellarTxHash || data.receipt.reference || data.receipt.hash || data.receipt.transaction;
+    }
+    if (!stellarTxHash && data.order && data.order.receipt) {
+      stellarTxHash = data.order.receipt;
     }
 
     mppOrderId = data.order?.id;
   } catch (err: any) {
     stellarTxSubmittedTotal.inc({ result: 'error' });
     return { success: false, error: `MPP payment failed: ${err.message}` };
+  }
+
+  // Standardize on a real 64-char hex hash or undefined (#14) — never an
+  // un-decodable receipt blob — so downstream consumers (e.g. TxLink) don't
+  // need to guess at the shape of this field.
+  if (stellarTxHash && !STELLAR_TX_HASH_RE.test(stellarTxHash)) {
+    logger.warn(
+      { receivedValue: stellarTxHash },
+      '[MPP] payment succeeded but receipt did not contain a valid Stellar tx hash',
+    );
+    stellarTxHash = undefined;
   }
 
   stellarTxSubmittedTotal.inc({ result: 'success' });
@@ -1037,7 +1886,7 @@ export async function approvePendingTransaction(txId: string): Promise<any> {
 
   let result: any;
   try {
-    if (tx.category === 'medications') {
+    if (tx.category === TRANSACTION_CATEGORY.MEDICATIONS) {
       const match = tx.description.match(/(.+) from (.+)/);
       if (!match) throw new Error('Cannot parse transaction description');
       const [, drugName, pharmacyName] = match;
@@ -1047,7 +1896,7 @@ export async function approvePendingTransaction(txId: string): Promise<any> {
         drugName,
         tx.amount,
       );
-    } else if (tx.category === 'bills') {
+    } else if (tx.category === TRANSACTION_CATEGORY.BILLS) {
       const match = tx.description.match(/(.+) — (.+)/);
       if (!match) throw new Error('Cannot parse transaction description');
       const [, description, providerName] = match;
@@ -1078,15 +1927,16 @@ export async function approvePendingTransaction(txId: string): Promise<any> {
   tx.stellarTxHash = result.stellarTxHash;
   if (result.mppOrderId) tx.mppOrderId = result.mppOrderId;
 
-  if (tx.category === 'medications') {
+  rotateMonthIfNeeded(spendingTracker);
+  if (tx.category === TRANSACTION_CATEGORY.MEDICATIONS) {
     spendingTracker.medications += tx.amount;
     agentSpendingUsd.set(
-      { category: 'medications' },
+      { category: TRANSACTION_CATEGORY.MEDICATIONS },
       spendingTracker.medications,
     );
-  } else if (tx.category === 'bills') {
+  } else if (tx.category === TRANSACTION_CATEGORY.BILLS) {
     spendingTracker.bills += tx.amount;
-    agentSpendingUsd.set({ category: 'bills' }, spendingTracker.bills);
+    agentSpendingUsd.set({ category: TRANSACTION_CATEGORY.BILLS }, spendingTracker.bills);
   }
   agentTransactionsTotal.inc({ status: 'completed' });
   tracker.transactions = tracker.transactions.map((t: any) =>
@@ -1145,47 +1995,103 @@ export async function payForMedication(
       error: `Invalid payment amount: $${amount}. Amount must be a positive finite number <= $${MAX_PAYMENT}.`,
     };
   }
-  const policyCheck = checkSpendingPolicy(amount, 'medications');
-  if (!policyCheck.allowed) {
-    const reason = policyCheck.reason!.includes('daily')
-      ? 'daily_limit'
-      : 'budget';
-    policyBlocksTotal.inc({ reason });
+  if (amount > getPlatformTxCap()) {
     return {
       success: false,
-      error: `BLOCKED BY SPENDING POLICY: ${policyCheck.reason}`,
+      error: `BLOCKED BY PLATFORM CAP: $${amount.toFixed(2)} exceeds MAX_SINGLE_TX_USDC ($${getPlatformTxCap().toFixed(2)})`,
     };
   }
-  if (policyCheck.requiresApproval && !skipApproval) {
-    policyBlocksTotal.inc({ reason: 'approval_required' });
-    const holdSeconds = (currentPolicy as any)?.holdTimeSeconds ?? 0;
-    const submittedAt = new Date().toISOString();
-    const pendingUntil = new Date(
-      Date.now() + holdSeconds * 1000,
-    ).toISOString();
-    const tx: Transaction & { pendingUntil?: string; submittedAt?: string } = {
-      id: `tx-${Date.now()}`,
-      timestamp: submittedAt,
-      type: 'medication',
-      description: `${drugName} from ${pharmacyName}`,
+  // Atomically check policy and reserve the budget before the async payment
+  // check when only one slot remains in the budget.
+  const release = await getBudgetMutex(currentRecipientId).acquire();
+  let policyCheck: ReturnType<typeof checkSpendingPolicy>;
+  try {
+    rotateMonthIfNeeded(spendingTracker);
+    policyCheck = checkSpendingPolicy(
       amount,
-      recipient: pharmacyId,
-      status: 'pending',
-      category: 'medications',
-      pendingUntil,
-      submittedAt,
-    };
-    spendingTracker.transactions.push(tx);
-    agentTransactionsTotal.inc({ status: 'pending' });
-    saveSpending(spendingTracker);
-    return {
-      success: false,
-      error: `REQUIRES CAREGIVER APPROVAL: $${amount.toFixed(2)} exceeds the $${currentPolicy.approvalThreshold} approval threshold.`,
-      transaction: tx,
-    };
+      TRANSACTION_CATEGORY.MEDICATIONS,
+    );
+    if (!policyCheck.allowed) {
+      const reason = policyCheck.reason!.includes('daily')
+        ? 'daily_limit'
+        : policyCheck.reason!.includes('overall monthly limit')
+          ? 'monthly_limit'
+          : 'budget';
+      policyBlocksTotal.inc({ reason });
+      paymentRejectedTotal.inc({ reason });
+
+      const tx = {
+        id: `tx-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        type: 'medication' as const,
+        description: `${drugName} from ${pharmacyName}`,
+        amount,
+        recipient: pharmacyId,
+        status: 'blocked' as const,
+        category: TRANSACTION_CATEGORY.MEDICATIONS,
+      };
+      spendingTracker.transactions.push(tx);
+      appendTransaction(tx as any);
+
+      // Surface the full budget context so the LLM can decide whether to ask
+      // the caregiver for an override or pick a cheaper option (Issue #160).
+      const dailyRemaining = policyCheck.dailyRemaining ?? 0;
+      const monthlyRemaining = policyCheck.monthlyRemaining ?? 0;
+      const budgetContext = {
+        reason,
+        attempted: amount,
+        dailyRemaining,
+        monthlyRemaining,
+        suggestion:
+          `Relay this to the caregiver: the $${amount.toFixed(2)} payment was blocked by the spending policy. ` +
+          `Remaining budget is $${dailyRemaining.toFixed(2)} today and $${monthlyRemaining.toFixed(2)} this month for ${TRANSACTION_CATEGORY.MEDICATIONS}. ` +
+          `Ask them to approve a one-time override, or choose a cheaper option that fits the remaining budget.`,
+      };
+
+      return {
+        success: false,
+        error: `BLOCKED BY SPENDING POLICY: ${policyCheck.reason}`,
+        transaction: tx,
+        budgetContext,
+      };
+    }
+    if (policyCheck.requiresApproval && !skipApproval) {
+      policyBlocksTotal.inc({ reason: 'approval_required' });
+      const holdSeconds = (currentPolicy as any)?.holdTimeSeconds ?? 0;
+      const submittedAt = new Date().toISOString();
+      const pendingUntil = new Date(
+        Date.now() + holdSeconds * 1000,
+      ).toISOString();
+      const tx: Transaction & { pendingUntil?: string; submittedAt?: string } = {
+        id: `tx-${Date.now()}`,
+        timestamp: submittedAt,
+        type: 'medication' as const,
+        description: `${drugName} from ${pharmacyName}`,
+        amount,
+        recipient: pharmacyId,
+        status: 'pending' as const,
+        category: TRANSACTION_CATEGORY.MEDICATIONS,
+        pendingUntil,
+        submittedAt,
+      };
+      spendingTracker.transactions.push(tx);
+      agentTransactionsTotal.inc({ status: 'pending' });
+      // Append only the new pending transaction — O(1) write (Issue #205)
+      appendTransaction(tx);
+      return {
+        success: false,
+        error: `REQUIRES CAREGIVER APPROVAL: ${amount.toFixed(2)} exceeds the ${currentPolicy.approvalThreshold} approval threshold.`,
+        transaction: tx,
+      };
+    }
+    // Reserve the budget before releasing the mutex so no other concurrent call
+    // can observe the pre-payment balance and pass a check it should fail.
+    spendingTracker.medications += amount;
+  } finally {
+    release();
   }
 
-  // Execute real MPP charge payment to pharmacy
+  // Execute real MPP charge payment to pharmacy (outside the mutex — can be slow)
   const paymentResult = await executeMedicationPayment(
     pharmacyId,
     pharmacyName,
@@ -1193,30 +2099,33 @@ export async function payForMedication(
     amount,
   );
   if (!paymentResult.success) {
+    // Roll back the optimistic reservation on payment failure.
+    spendingTracker.medications -= amount;
     return paymentResult;
   }
 
   const tx: Transaction = {
     id: `tx-${Date.now()}`,
     timestamp: new Date().toISOString(),
-    type: 'medication',
+    type: 'medication' as const,
     description: `${drugName} from ${pharmacyName} [MPP Charge]`,
     amount,
     recipient: pharmacyId,
     stellarTxHash: paymentResult.stellarTxHash,
     mppOrderId: paymentResult.mppOrderId,
-    status: 'completed',
-    category: 'medications',
+    status: 'completed' as const,
+    category: TRANSACTION_CATEGORY.MEDICATIONS,
   };
 
-  spendingTracker.medications += amount;
+  // medications was already incremented during the reservation step above.
   spendingTracker.transactions.push(tx);
   agentTransactionsTotal.inc({ status: 'completed' });
   agentSpendingUsd.set(
-    { category: 'medications' },
+    { category: TRANSACTION_CATEGORY.MEDICATIONS },
     spendingTracker.medications,
   );
-  saveSpending(spendingTracker);
+  // Append only the new completed transaction — O(1) write (Issue #205)
+  appendTransaction(tx);
 
   // Schedule adherence reminder (Issue #264)
   const reminderDate = new Date(Date.now() + daysSupply * 24 * 60 * 60 * 1000).toISOString();
@@ -1240,6 +2149,26 @@ export async function payForMedication(
   return { success: true, transaction: tx };
 }
 
+// Helper: build, sign, and submit a single USDC payment so payBill can retry on tx_bad_seq
+async function buildAndSubmitUsdcPayment(account: any, recipientKey: string, amount: number): Promise<string> {
+  const usdcAsset = new Asset("USDC", USDC_ISSUER);
+  const stellarTx = new TransactionBuilder(account, {
+    fee: "100",
+    networkPassphrase: Networks.TESTNET,
+  })
+    .addOperation(Operation.payment({ destination: recipientKey, asset: usdcAsset, amount: amount.toFixed(7) }))
+    .setTimeout(30)
+    .build();
+  stellarTx.sign(agentKeypair);
+  const sigHint = stellarTx.signatures[0]?.hint();
+  if (!sigHint || !sigHint.equals(agentKeypair.signatureHint())) {
+    throw new Error(`Signer mismatch: expected ${agentKeypair.publicKey()} — refusing to submit`);
+  }
+  console.log(`  [Stellar] Signer verified: ${agentKeypair.publicKey().slice(0, 8)}...`);
+  const result = await horizonServer.submitTransaction(stellarTx);
+  return (result as any).hash;
+}
+
 // --- Tool: Pay a medical bill via real Stellar USDC transfer ---
 export async function payBill(
   providerId: string,
@@ -1255,50 +2184,85 @@ export async function payBill(
       error: `Invalid payment amount: $${amount}. Amount must be a positive finite number <= $${MAX_PAYMENT}.`,
     };
   }
-  const policyCheck = checkSpendingPolicy(amount, 'bills');
-  if (!policyCheck.allowed) {
-    const reason = policyCheck.reason!.includes('daily')
-      ? 'daily_limit'
-      : 'budget';
-    policyBlocksTotal.inc({ reason });
+  if (amount > getPlatformTxCap()) {
     return {
       success: false,
-      error: `BLOCKED BY SPENDING POLICY: ${policyCheck.reason}`,
+      error: `BLOCKED BY PLATFORM CAP: $${amount.toFixed(2)} exceeds MAX_SINGLE_TX_USDC ($${getPlatformTxCap().toFixed(2)})`,
     };
   }
-  if (policyCheck.requiresApproval && !skipApproval) {
-    policyBlocksTotal.inc({ reason: 'approval_required' });
-    const holdSeconds = (currentPolicy as any)?.holdTimeSeconds ?? 0;
-    const submittedAt = new Date().toISOString();
-    const pendingUntil = new Date(
-      Date.now() + holdSeconds * 1000,
-    ).toISOString();
-    const tx: Transaction & { pendingUntil?: string; submittedAt?: string } = {
-      id: `tx-${Date.now()}`,
-      timestamp: submittedAt,
-      type: 'bill',
-      description: `${description} — ${providerName}`,
-      amount,
-      recipient: providerId,
-      status: 'pending',
-      category: 'bills',
-      pendingUntil,
-      submittedAt,
-    };
-    spendingTracker.transactions.push(tx);
-    agentTransactionsTotal.inc({ status: 'pending' });
-    saveSpending(spendingTracker);
-    return {
-      success: false,
-      error: `REQUIRES CAREGIVER APPROVAL: $${amount.toFixed(2)} exceeds the $${currentPolicy.approvalThreshold} approval threshold.`,
-      transaction: tx,
-    };
+  // Atomically check policy and reserve the budget before the async payment
+  // (Issue #209).
+  const releaseBill = await getBudgetMutex(currentRecipientId).acquire();
+  let billPolicyCheck: ReturnType<typeof checkSpendingPolicy>;
+  try {
+    rotateMonthIfNeeded(spendingTracker);
+    billPolicyCheck = checkSpendingPolicy(amount, TRANSACTION_CATEGORY.BILLS);
+    if (!billPolicyCheck.allowed) {
+      const reason = billPolicyCheck.reason!.includes('daily')
+        ? 'daily_limit'
+        : 'budget';
+      policyBlocksTotal.inc({ reason });
+      
+      const tx = {
+        id: `tx-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        type: 'bill' as const,
+        description: `${description} — ${providerName}`,
+        amount,
+        recipient: providerId,
+        status: 'blocked' as const,
+        category: TRANSACTION_CATEGORY.BILLS,
+      };
+      spendingTracker.transactions.push(tx);
+      appendTransaction(tx as any);
+
+      return {
+        success: false,
+        error: `BLOCKED BY SPENDING POLICY: ${billPolicyCheck.reason}`,
+        transaction: tx,
+      };
+    }
+    if (billPolicyCheck.requiresApproval && !skipApproval) {
+      policyBlocksTotal.inc({ reason: 'approval_required' });
+      const holdSeconds = (currentPolicy as any)?.holdTimeSeconds ?? 0;
+      const submittedAt = new Date().toISOString();
+      const pendingUntil = new Date(
+        Date.now() + holdSeconds * 1000,
+      ).toISOString();
+      const tx: Transaction & { pendingUntil?: string; submittedAt?: string } = {
+        id: `tx-${Date.now()}`,
+        timestamp: submittedAt,
+        type: 'bill' as const,
+        description: `${description} — ${providerName}`,
+        amount,
+        recipient: providerId,
+        status: 'pending' as const,
+        category: TRANSACTION_CATEGORY.BILLS,
+        pendingUntil,
+        submittedAt,
+      };
+      spendingTracker.transactions.push(tx);
+      agentTransactionsTotal.inc({ status: 'pending' });
+      // Append only the new pending transaction — O(1) write (Issue #205)
+      appendTransaction(tx);
+      return {
+        success: false,
+        error: `REQUIRES CAREGIVER APPROVAL: ${amount.toFixed(2)} exceeds the ${currentPolicy.approvalThreshold} approval threshold.`,
+        transaction: tx,
+      };
+    }
+    // Reserve the budget before releasing the mutex.
+    spendingTracker.bills += amount;
+  } finally {
+    releaseBill();
   }
 
-  // Execute real Stellar USDC transfer
+  // Execute real Stellar USDC transfer (serialised per-keypair to avoid sequence races — Issue #XXX)
   const recipientKey = process.env.BILL_PROVIDER_PUBLIC_KEY;
-  if (!recipientKey)
+  if (!recipientKey) {
+    spendingTracker.bills -= amount; // roll back reservation
     return { success: false, error: 'BILL_PROVIDER_PUBLIC_KEY not configured' };
+  }
 
   logger.info(
     { provider: providerName, amount },
@@ -1307,9 +2271,10 @@ export async function payBill(
 
   let stellarTxHash: string | undefined;
 
+  const releaseSubmission = await getSubmissionMutex(agentKeypair.publicKey()).acquire();
   try {
     const account = await horizonServer.loadAccount(agentKeypair.publicKey());
-    const usdcAsset = new Asset('USDC', USDC_ISSUER);
+    const usdcAsset = new Asset("USDC", USDC_ISSUER);
 
     const paymentOp = Operation.payment({
       destination: recipientKey,
@@ -1330,10 +2295,13 @@ export async function payBill(
     stellarTxSubmittedTotal.inc({ result: 'error' });
     const errorDetail =
       err?.response?.data?.extras?.result_codes || err.message;
+    spendingTracker.bills -= amount; // roll back reservation on Stellar failure
     return {
       success: false,
       error: `Stellar USDC transfer failed: ${JSON.stringify(errorDetail)}`,
     };
+  } finally {
+    releaseSubmission();
   }
 
   stellarTxSubmittedTotal.inc({ result: 'success' });
@@ -1342,20 +2310,21 @@ export async function payBill(
   const tx: Transaction = {
     id: `tx-${Date.now()}`,
     timestamp: new Date().toISOString(),
-    type: 'bill',
+    type: 'bill' as const,
     description: `${description} — ${providerName} [Stellar USDC]`,
     amount,
     recipient: providerId,
     stellarTxHash,
-    status: 'completed',
-    category: 'bills',
+    status: 'completed' as const,
+    category: TRANSACTION_CATEGORY.BILLS,
   };
 
-  spendingTracker.bills += amount;
+  // bills was already incremented during the reservation step above.
   spendingTracker.transactions.push(tx);
   agentTransactionsTotal.inc({ status: 'completed' });
-  agentSpendingUsd.set({ category: 'bills' }, spendingTracker.bills);
-  saveSpending(spendingTracker);
+  agentSpendingUsd.set({ category: TRANSACTION_CATEGORY.BILLS }, spendingTracker.bills);
+  // Append only the new completed transaction — O(1) write (Issue #205)
+  appendTransaction(tx);
 
   // Notify on significant payment (Issue #265)
   if (amount > currentPolicy.approvalThreshold) {
@@ -1372,12 +2341,13 @@ export async function payBill(
 
 // --- Tool: Get spending summary ---
 export function getSpendingSummary() {
+  const policy = loadPolicy();
   const total =
     spendingTracker.medications +
     spendingTracker.bills +
     spendingTracker.serviceFees;
   return {
-    policy: currentPolicy,
+    policy,
     spending: {
       medications: +spendingTracker.medications.toFixed(2),
       bills: +spendingTracker.bills.toFixed(2),
@@ -1386,11 +2356,9 @@ export function getSpendingSummary() {
     },
     budgetRemaining: {
       medications: +(
-        currentPolicy.medicationMonthlyBudget - spendingTracker.medications
+        policy.medicationMonthlyBudget - spendingTracker.medications
       ).toFixed(2),
-      bills: +(currentPolicy.billMonthlyBudget - spendingTracker.bills).toFixed(
-        2,
-      ),
+      bills: +(policy.billMonthlyBudget - spendingTracker.bills).toFixed(2),
     },
     transactionCount: spendingTracker.transactions.length,
     recentTransactions: spendingTracker.transactions.slice(-5),
@@ -1474,11 +2442,11 @@ function loadOrders(recipientId?: string): OrderRecord[] {
   return JSON.parse(readFileSync(file, "utf-8"));
 }
 function saveOrders(orders: OrderRecord[], recipientId?: string) {
-  writeFileSync(getOrdersFile(recipientId), JSON.stringify(orders, null, 2));
+  writeAtomically(getOrdersFile(recipientId), JSON.stringify(orders, null, 2));
 }
 
 // --- Tool: Schedule an adherence reminder after pharmacy order (Issue #264) ---
-const ADHERENCE_FILE = `${DATA_DIR}/adherence.jsonl`;
+const ADHERENCE_FILE = `${getDataDir()}/adherence.jsonl`;
 interface AdherenceEntry {
   recipientId: string;
   reminderDate: string;
@@ -1557,6 +2525,7 @@ const amountSchema = z.union([z.number(), z.string()]);
 const TOOL_INPUT_SCHEMAS = {
   compare_pharmacy_prices: z.object({
     drug_name: z.string().min(1),
+    dosage: z.string().min(1),
     zip_code: z.string().optional(),
     recipient_id: recipientIdSchema,
   }).strict(),
@@ -1567,6 +2536,11 @@ const TOOL_INPUT_SCHEMAS = {
   check_drug_interactions: z.object({
     medications: z.array(z.string().min(1)),
     recipient_id: recipientIdSchema,
+  }).strict(),
+  fetch_tool_result: z.object({
+    result_id: z.string().min(1),
+    offset: z.number().int().nonnegative().optional(),
+    limit: z.number().int().positive().optional(),
   }).strict(),
   pay_for_medication: z.object({
     pharmacy_id: z.string().min(1),
@@ -1658,27 +2632,28 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'compare_pharmacy_prices',
     description:
-      'Compare medication prices across multiple pharmacies. Pays $0.002 USDC per query via x402 on Stellar. Returns prices sorted cheapest to most expensive, with potential savings. Each pharmacy has an inStock field: "unknown" means real-time inventory is unavailable (proceed with caution), true means in stock. Never assume a medication is in stock if inStock is "unknown" — confirm with the pharmacy before ordering.',
+      'Compare medication prices across multiple pharmacies. Pays $0.002 USDC per query via x402 on Stellar. Pass the medication dosage exactly as known; the returned dosage field is reliable and echoed from the request for safety. Returns prices sorted cheapest to most expensive, with potential savings. If the medication is unknown or no prices are found, the tool returns { ok: false, reason: "NO_PRICES_FOUND" } which you should handle gracefully (e.g. notify the caregiver). Each pharmacy has an inStock field: "unknown" means real-time inventory is unavailable (proceed with caution), true means in stock. Never assume a medication is in stock if inStock is "unknown" — confirm with the pharmacy before ordering.',
     input_schema: strictInputSchema({
       type: 'object' as const,
       properties: {
         drug_name: { type: 'string', description: 'Name of the medication (e.g., Lisinopril, Metformin)' },
+        dosage: { type: 'string', description: 'Medication dosage exactly as prescribed or provided (e.g., 10mg)' },
         zip_code: { type: 'string', description: 'ZIP code for pharmacy location (default: 90210)' },
         recipient_id: { type: 'string', description: 'Care recipient ID (default: rosa)' },
       },
-      required: ['drug_name'],
+      required: ['drug_name', 'dosage'],
     }),
   },
   {
     name: 'audit_medical_bill',
     description:
-      'Audit a medical bill for errors (duplicates, upcoding, overcharges). 80% of medical bills contain errors. Pays $0.01 USDC per audit via x402 on Stellar. Pass line_items as a JSON string array of objects with fields: description, cptCode, quantity, chargedAmount.',
+      'Audit a medical bill for errors (duplicates, upcoding, overcharges). 80% of medical bills contain errors. Pays $0.01 USDC per audit via x402 on Stellar. Pass line_items_json as a JSON string array of line items. Each line item must include description, cptCode, quantity, and chargedAmount. cptCode must match /^(?:\\d{5}|J\\d{4})$/, quantity must be > 0, and chargedAmount must be > 0.',
     input_schema: strictInputSchema({
       type: 'object' as const,
       properties: {
         line_items_json: {
           type: 'string',
-          description: 'JSON string of line items array. Each item: {"description":"...","cptCode":"...","quantity":1,"chargedAmount":100}',
+          description: 'JSON string of line items array. Each item must include description, cptCode, quantity, and chargedAmount. Example: [{"description":"Office visit","cptCode":"99213","quantity":1,"chargedAmount":130}]',
         },
         recipient_id: { type: 'string', description: 'Care recipient ID (default: rosa)' },
       },
@@ -1688,7 +2663,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'check_drug_interactions',
     description:
-      'Check for drug-drug interactions. Pays $0.001 USDC per check via x402 on Stellar. Returns severity levels and clinical recommendations.',
+      'Check for drug-drug interactions. Pays $0.001 USDC per check via x402 on Stellar. Requires at least 2 medications; if fewer are supplied, the tool returns NEED_AT_LEAST_TWO_MEDS instead of claiming there are no interactions. Returns severity levels and clinical recommendations.',
     input_schema: strictInputSchema({
       type: 'object' as const,
       properties: {
@@ -1703,16 +2678,30 @@ export const TOOL_DEFINITIONS = [
     }),
   },
   {
+    name: 'fetch_tool_result',
+    description:
+      'Fetch the remainder of a previously truncated tool result by result_id. Use this when a tool response includes resultId, summary, or hasMore=true and you need the full data before concluding.',
+    input_schema: strictInputSchema({
+      type: 'object' as const,
+      properties: {
+        result_id: { type: 'string', description: 'Identifier returned in the truncated tool response' },
+        offset: { type: 'number', description: 'Zero-based offset into the stored result (default: 0)' },
+        limit: { type: 'number', description: 'Maximum number of items to fetch (default: 10)' },
+      },
+      required: ['result_id'],
+    }),
+  },
+  {
     name: 'pay_for_medication',
     description:
-      'Pay a pharmacy for a medication order via MPP Charge on Stellar (real USDC payment). Subject to spending policy limits.',
+      'Pay a pharmacy for a medication order via MPP Charge on Stellar (real USDC payment). Subject to spending policy limits. Amount must be between $0.01 and $10,000. If the payment is blocked by spending policy, the result includes a budgetContext object { reason, attempted, dailyRemaining, monthlyRemaining, suggestion }: relay it to the caregiver so they can either approve a one-time override or pick a cheaper option within the remaining budget.',
     input_schema: strictInputSchema({
       type: 'object' as const,
       properties: {
         pharmacy_id: { type: 'string' },
         pharmacy_name: { type: 'string' },
         drug_name: { type: 'string' },
-        amount: { type: 'number' },
+        amount: { type: 'number', description: 'Payment amount in USD (min: 0.01, max: 10000)' },
         days_supply: { type: 'number', description: 'Days supply for adherence tracking (default: 30)' },
         recipient_id: { type: 'string', description: 'Care recipient ID (default: rosa)' },
       },
@@ -1722,14 +2711,14 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'pay_bill',
     description:
-      'Pay a medical bill via direct Stellar USDC transfer. Subject to spending policy limits. If the bill has been audited and errors found, pay only the corrected amount.',
+      'Pay a medical bill via direct Stellar USDC transfer. Subject to spending policy limits. If the bill has been audited and errors found, pay only the corrected amount. Amount must be between $0.01 and $10,000.',
     input_schema: strictInputSchema({
       type: 'object' as const,
       properties: {
         provider_id: { type: 'string' },
         provider_name: { type: 'string' },
         description: { type: 'string' },
-        amount: { type: 'number' },
+        amount: { type: 'number', description: 'Payment amount in USD (min: 0.01, max: 10000)' },
         recipient_id: { type: 'string', description: 'Care recipient ID (default: rosa)' },
       },
       required: ['provider_id', 'provider_name', 'description', 'amount'],
@@ -1839,7 +2828,7 @@ export const TOOL_DEFINITIONS = [
 ];
 
 // Start scanner (runs in-process). Interval is conservative (5s).
-setInterval(() => {
+const pendingTransactionScanner = setInterval(() => {
   processPendingTransactions().catch((err) => {
     logger.error(
       { err: err?.message || err },
@@ -1847,3 +2836,21 @@ setInterval(() => {
     );
   });
 }, 5000);
+pendingTransactionScanner.unref?.();
+
+const spendingCacheRefreshTimer = setInterval(() => {
+  for (const recipientId of spendingCache.keys()) {
+    try {
+      spendingCache.set(recipientId, {
+        data: readSpendingFromDisk(recipientId),
+        loadedAt: Date.now(),
+      });
+    } catch (err: any) {
+      logger.warn(
+        { recipientId, err: err?.message || err },
+        '[SpendingCache] refresh failed',
+      );
+    }
+  }
+}, SPENDING_CACHE_TTL_MS);
+spendingCacheRefreshTimer.unref?.();

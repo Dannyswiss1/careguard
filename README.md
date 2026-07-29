@@ -1,5 +1,7 @@
 # CareGuard
 
+[![CI](https://github.com/harystyleseze/careguard/actions/workflows/ci.yml/badge.svg)](https://github.com/harystyleseze/careguard/actions/workflows/ci.yml)
+
 **An autonomous AI agent that manages elderly healthcare spending on Stellar.**
 
 Compares medication prices across pharmacies, audits medical bills for errors, checks drug interactions, and executes real USDC payments — all within caregiver-controlled spending policies. Every transaction settles on Stellar testnet via x402 and MPP.
@@ -45,6 +47,8 @@ Every payment is a real Stellar testnet transaction verifiable on [stellar.exper
 
 For a full runtime flow diagram, module map, and integration details, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+For deployment topology (Docker Compose and Render), see [docs/deployment/topology.md](docs/deployment/topology.md).
+
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -88,6 +92,8 @@ For a full runtime flow diagram, module map, and integration details, see [docs/
 
 ## Quick Start
 
+**Prerequisites:** Node.js 22 or later, npm.
+
 See [QUICKSTART.md](QUICKSTART.md) for the full setup guide.
 
 ```bash
@@ -111,6 +117,8 @@ cd dashboard && npm run dev
 
 # 6. Open http://localhost:3000
 ```
+
+> **Note:** `data/` is a **local working directory**. Spending snapshots, transaction logs, and orders contain medication lists, spending patterns, and wallet activity — they are excluded from version control by `.gitignore` and must never be committed. See `docs/adr/002-pii-in-persistence.md` for details.
 
 ### Docker dev (one command)
 
@@ -157,6 +165,52 @@ Health checks are enabled on every service. Targets:
 
 Boot time on a warm Docker is ~30s (cold first build is much longer due to npm install). If the dashboard waits forever for `server: healthy`, check `docker compose logs server` — the most common cause is missing/invalid `OZ_FACILITATOR_API_KEY` or `AGENT_SECRET_KEY` in `.env`.
 
+See [docs/observability/health-checks.md](docs/observability/health-checks.md) for the `/health` and `/ready` response schemas and what each dependency check means.
+
+For a symptom-to-resolution index (stuck agent spinner, repeated 402s, blank wallet balance, dashboard "Disconnected", startup hangs on Horizon, missing env), see [docs/troubleshooting.md](docs/troubleshooting.md).
+
+---
+
+## API Documentation
+
+The OpenAPI 3.1 spec is rendered as an interactive reference by the unified server:
+
+| What | Local | Production |
+|------|-------|------------|
+| Interactive reference | <http://localhost:3000/docs> | <https://api.careguard.xyz/docs> |
+| Raw spec | <http://localhost:3000/openapi.yml> | <https://api.careguard.xyz/openapi.yml> |
+
+The spec is generated (`npm run gen-openapi`), never hand-edited, and validated in
+CI (`npm run validate:openapi`). See [docs/api/README.md](docs/api/README.md) for the
+hosting setup, CI validation, and how the x402 `X-PAYMENT` auth scheme works.
+
+---
+
+## Running Tests
+
+```bash
+# Install dependencies (if not already done)
+pnpm install
+
+# Run all tests (root backend + dashboard)
+pnpm test
+
+# Watch mode
+pnpm test:watch
+
+# Run tests with coverage
+pnpm test -- --coverage
+```
+
+Tests are organized in two workspaces:
+
+- **Root workspace** – backend tests for `agent/`, `services/`, `shared/`, `scripts/` (Node environment)
+- **Dashboard workspace** – frontend tests for `dashboard/src/` (jsdom environment via `dashboard/vitest.config.ts`)
+
+Shared test helpers (environment scrubber, fetch mock, Horizon mock) live in `tests/setup.ts`.
+
+> **Branch protection:** The `main` branch requires the CI check (`ci`) to pass before merging. Ensure all typecheck, lint, and test steps are green on your PR.
+
 ---
 
 ## Tech Stack
@@ -197,6 +251,8 @@ From real end-to-end test on Stellar testnet:
 
 **Cost breakdown:** 10 price queries @ $0.002 = $0.02, 1 drug interaction check @ $0.001 = $0.001, 1 bill audit @ $0.01 = $0.01. Total: $0.030 in autonomous AI agent operational costs.
 
+For detailed cost analysis, per-operation breakdown, and cost estimation worksheets, see [Cost Estimation Guide](docs/cost-estimation.md).
+
 ---
 
 ## Project Structure
@@ -217,10 +273,23 @@ careguard/
 │   └── types.ts           # Shared TypeScript types
 ├── scripts/
 │   └── setup-wallets.ts   # Testnet wallet creation + USDC trustlines
-├── data/                  # Persisted spending data + orders
+├── data/                  # Local working directory (see note below)
 ├── .env.example           # Environment variable template
 ├── QUICKSTART.md          # Setup guide
 ```
+
+---
+
+## Ops and Reliability
+
+| Doc | What it covers |
+|-----|---------------|
+| [docs/sla.md](docs/sla.md) | Availability targets, downtime definitions, dependency caveats, and maintenance-window policy |
+| [docs/release/production-readiness.md](docs/release/production-readiness.md) | Go-live checklist: security gates, observability, testnet → mainnet cutover, and payment config verification |
+| [docs/release/compatibility-matrix.md](docs/release/compatibility-matrix.md) | Node, SDK, and API contract version requirements per release |
+| [docs/observability/slo.md](docs/observability/slo.md) | SLO targets, error budgets, and alert mappings |
+| [docs/observability/health-checks.md](docs/observability/health-checks.md) | `/health` and `/ready` response schemas |
+| [docs/runbooks/README.md](docs/runbooks/README.md) | Operational runbooks for outages and incidents |
 
 ---
 

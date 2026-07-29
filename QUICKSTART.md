@@ -6,7 +6,7 @@ Get CareGuard running on Stellar testnet with real x402 and MPP payments.
 
 ## Prerequisites
 
-- **Node.js** 20 or later
+- **Node.js** 22 or later
 - **npm** (comes with Node.js)
 - **A Groq API key** (free) — [console.groq.com](https://console.groq.com)
 - **An OZ Facilitator API key** (free) — [channels.openzeppelin.com/testnet/gen](https://channels.openzeppelin.com/testnet/gen)
@@ -195,6 +195,11 @@ for b in d['balances']:
 | Groq 429 rate limit | Wait for reset, or switch to a different model/provider |
 | Dashboard can't connect | Ensure backend services are running (`npm run dev`) |
 | Port already in use | Kill existing processes on the ports (see below) |
+
+For symptoms beyond setup-time issues — stuck agent spinner, repeated 402s,
+blank wallet balance, dashboard "Disconnected", startup hangs on Horizon —
+see [docs/troubleshooting.md](docs/troubleshooting.md), which routes each to
+the relevant runbook.
 
 ### Port Cleanup by OS
 

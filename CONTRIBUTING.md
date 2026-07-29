@@ -12,12 +12,29 @@ npm run setup   # generates testnet wallets
 
 See [QUICKSTART.md](QUICKSTART.md) for full environment setup.
 
+## Node.js Version Policy
+
+This project requires **Node.js 22** and will refuse to install on earlier versions.
+
+| Artifact | Pin |
+|----------|-----|
+| `.nvmrc` | `22` |
+| `package.json` `engines` | `>=22.0.0` |
+| CI matrix (`ci.yml`) | `[22]` (single version, no drift) |
+| `render.yaml` `NODE_VERSION` | `22` |
+
+If you use [nvm](https://github.com/nvm-sh/nvm), running `nvm use` in the project root will activate the correct version automatically.
+
+**Why Node 22?** The server and agent entry-points use `--experimental-strip-types` and `--experimental-transform-types`, which reached stable shape in Node 22. Running on Node 20 will fail silently in some code paths and loudly in others.
+
 ## Development Workflow
 
 1. Fork the repo and create a branch from `main`
 2. Make your changes with tests where applicable
 3. Run `npm test` (root) and `cd dashboard && npm test` before pushing
 4. Open a pull request — CI must be green before merge
+
+When cutting a release, update [`docs/release/compatibility-matrix.md`](docs/release/compatibility-matrix.md) with the new version row (Node, SDK, and API contract versions). See [docs/release/versioning.md](docs/release/versioning.md) for the full release process.
 
 ## Dependency Management
 
@@ -58,6 +75,23 @@ The [dependabot-automerge workflow](.github/workflows/dependabot-automerge.yml) 
 - Auto-squash-merges patch and minor updates
 - Adds a comment and labels on major updates, blocking auto-merge
 
+## Release Process
+
+For information on versioning, deprecations, hotfixes, and rollbacks, see:
+
+- [Versioning Guidelines](docs/release/versioning.md) — SemVer rules for breaking/minor/patch releases
+- [Deprecation Policy](docs/release/deprecation-policy.md) — How to safely deprecate APIs and env vars
+- [Hotfix Process](docs/release/hotfix-process.md) — Emergency patch release workflow
+- [Rollback Procedure](docs/release/rollback.md) — How to revert a bad release
+
+## Architecture Decisions
+
+Significant architectural decisions are documented as ADRs in
+[docs/adr/README.md](docs/adr/README.md). Before making a major
+change, check whether a prior ADR covers the topic. If no existing
+ADR addresses the decision, propose one using the template in the
+ADR index.
+
 ## Security
 
 - Never commit secrets or `.env` files — they are gitignored
@@ -69,6 +103,29 @@ The [dependabot-automerge workflow](.github/workflows/dependabot-automerge.yml) 
 - TypeScript strict mode — no `any` without justification
 - ESLint + Prettier (run `npm run lint` before pushing)
 - Keep services self-contained; shared code goes in `shared/`
+
+## API Changes
+
+HTTP endpoints are described by [`docs/openapi.yml`](docs/openapi.yml), rendered
+at `/docs` on the running server (<http://localhost:3000/docs> locally). The spec
+is **generated** — never edit the YAML by hand:
+
+1. Change the endpoint definition in [`scripts/gen-openapi.ts`](scripts/gen-openapi.ts)
+2. Run `npm run gen-openapi` and commit the regenerated `docs/openapi.yml`
+3. Run `npm run validate:openapi` — CI runs the same check plus a full OpenAPI
+   3.1 lint, and fails on a malformed or out-of-date spec
+
+See [`docs/api/README.md`](docs/api/README.md) for how the docs are hosted, how
+CI validates the spec, and how the x402 `X-PAYMENT` auth scheme behaves.
+
+## Observability
+
+When adding or modifying metrics, follow the conventions in
+[`docs/observability/metrics-naming.md`](docs/observability/metrics-naming.md).
+This document covers naming conventions (prefixes, `_total` suffix, base-unit
+policy), label-cardinality rules, and includes a checklist for new metrics.
+Every new metric must also be added to
+[`docs/observability/metrics-catalog.md`](docs/observability/metrics-catalog.md).
 
 ## Smart Contract Guidelines (Stellar/Soroban)
 

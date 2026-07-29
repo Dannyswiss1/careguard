@@ -5,6 +5,12 @@ import { copyText } from "../../lib/clipboard";
 import type { CaregiverProfile, RecipientProfile } from "../../lib/types";
 import { Toast } from "../primitives/toast";
 import type { AgentInfo } from "../types";
+import { getTranslations, type Locale } from "../../i18n";
+
+export interface RecipientOption {
+  id: string;
+  name: string;
+}
 
 export interface SettingsTabProps {
   recipient: RecipientProfile;
@@ -16,6 +22,10 @@ export interface SettingsTabProps {
     recipient?: Partial<RecipientProfile>;
     caregiver?: Partial<CaregiverProfile>;
   }) => Promise<void>;
+  recipients?: RecipientOption[];
+  selectedRecipientId?: string;
+  onSelectRecipient?: (id: string) => void;
+  locale?: Locale;
 }
 
 export function SettingsTab({
@@ -25,7 +35,12 @@ export function SettingsTab({
   agentPaused,
   onTogglePause,
   onUpdateProfile,
+  recipients,
+  selectedRecipientId,
+  onSelectRecipient,
+  locale = "en",
 }: SettingsTabProps) {
+  const t = getTranslations(locale);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [toastFallback, setToastFallback] = useState<string | undefined>(undefined);
@@ -113,7 +128,21 @@ export function SettingsTab({
       />
       <div className="bg-white rounded-xl border border-slate-200 p-6">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-sm font-semibold text-slate-700">Care Recipient</h2>
+          <div className="flex items-center gap-3">
+            <h2 className="text-sm font-semibold text-slate-700">{t.settings.recipient}</h2>
+            {recipients && recipients.length > 1 && onSelectRecipient && (
+              <select
+                className="text-xs border border-slate-200 rounded-lg px-2 py-1 bg-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                value={selectedRecipientId ?? ''}
+                onChange={(e) => onSelectRecipient(e.target.value)}
+                aria-label={t.settings.recipient}
+              >
+                {recipients.map((r) => (
+                  <option key={r.id} value={r.id}>{r.name}</option>
+                ))}
+              </select>
+            )}
+          </div>
           {!editing && (
             <button
               onClick={startEditing}
@@ -125,27 +154,27 @@ export function SettingsTab({
         </div>
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1">Name</label>
+            <label className="block text-xs font-medium text-slate-600 mb-1">{t.settings.name}</label>
             {editing ? (
               <input
                 className={editClass}
                 value={form.recipientName}
                 onChange={(e) => setForm((f) => ({ ...f, recipientName: e.target.value }))}
-                aria-label="Recipient Name"
+                aria-label={t.settings.name}
               />
             ) : (
               <div className={readClass}>{recipient.name}</div>
             )}
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1">Age</label>
+            <label className="block text-xs font-medium text-slate-600 mb-1">{t.settings.age}</label>
             {editing ? (
               <input
                 type="number"
                 className={editClass}
                 value={form.recipientAge}
                 onChange={(e) => setForm((f) => ({ ...f, recipientAge: e.target.value }))}
-                aria-label="Recipient Age"
+                aria-label={t.settings.age}
               />
             ) : (
               <div className={readClass}>{recipient.age ?? "N/A"}</div>
@@ -153,40 +182,40 @@ export function SettingsTab({
           </div>
           <div className="col-span-2">
             <label className="block text-xs font-medium text-slate-600 mb-1">
-              Medications (comma-separated)
+              {`${t.settings.medications} (comma-separated)`}
             </label>
             {editing ? (
               <input
                 className={editClass + " w-full"}
                 value={form.medications}
                 onChange={(e) => setForm((f) => ({ ...f, medications: e.target.value }))}
-                aria-label="Medications"
+                aria-label={t.settings.medications}
               />
             ) : (
               <div className={readClass}>{(recipient.medications ?? []).join(", ")}</div>
             )}
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1">Primary Doctor</label>
+            <label className="block text-xs font-medium text-slate-600 mb-1">{t.settings.doctor}</label>
             {editing ? (
               <input
                 className={editClass}
                 value={form.doctor}
                 onChange={(e) => setForm((f) => ({ ...f, doctor: e.target.value }))}
-                aria-label="Primary Doctor"
+                aria-label={t.settings.doctor}
               />
             ) : (
               <div className={readClass}>{recipient.doctor ?? "N/A"}</div>
             )}
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1">Insurance</label>
+            <label className="block text-xs font-medium text-slate-600 mb-1">{t.settings.insurance}</label>
             {editing ? (
               <input
                 className={editClass}
                 value={form.insurance}
                 onChange={(e) => setForm((f) => ({ ...f, insurance: e.target.value }))}
-                aria-label="Insurance"
+                aria-label={t.settings.insurance}
               />
             ) : (
               <div className={readClass}>{recipient.insurance ?? "N/A"}</div>
@@ -196,42 +225,42 @@ export function SettingsTab({
       </div>
 
       <div className="bg-white rounded-xl border border-slate-200 p-6">
-        <h2 className="text-sm font-semibold text-slate-700 mb-4">Caregiver</h2>
+        <h2 className="text-sm font-semibold text-slate-700 mb-4">{t.settings.caregiver}</h2>
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1">Name</label>
+            <label className="block text-xs font-medium text-slate-600 mb-1">{t.settings.name}</label>
             {editing ? (
               <input
                 className={editClass}
                 value={form.caregiverName}
                 onChange={(e) => setForm((f) => ({ ...f, caregiverName: e.target.value }))}
-                aria-label="Caregiver Name"
+                aria-label={`${t.settings.caregiver} ${t.settings.name}`}
               />
             ) : (
               <div className={readClass}>{caregiver.name}</div>
             )}
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1">Relationship</label>
+            <label className="block text-xs font-medium text-slate-600 mb-1">{t.settings.relationship}</label>
             {editing ? (
               <input
                 className={editClass}
                 value={form.relationship}
                 onChange={(e) => setForm((f) => ({ ...f, relationship: e.target.value }))}
-                aria-label="Relationship"
+                aria-label={t.settings.relationship}
               />
             ) : (
               <div className={readClass}>{caregiver.relationship ?? "N/A"}</div>
             )}
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1">Location</label>
+            <label className="block text-xs font-medium text-slate-600 mb-1">{t.settings.location}</label>
             {editing ? (
               <input
                 className={editClass}
                 value={form.location}
                 onChange={(e) => setForm((f) => ({ ...f, location: e.target.value }))}
-                aria-label="Location"
+                aria-label={t.settings.location}
               />
             ) : (
               <div className={readClass}>{caregiver.location ?? "N/A"}</div>
@@ -239,14 +268,14 @@ export function SettingsTab({
           </div>
           <div>
             <label className="block text-xs font-medium text-slate-600 mb-1">
-              Notification Channel
+              {t.settings.notifications}
             </label>
             {editing ? (
               <input
                 className={editClass}
                 value={form.notifications}
                 onChange={(e) => setForm((f) => ({ ...f, notifications: e.target.value }))}
-                aria-label="Notification Channel"
+                aria-label={t.settings.notifications}
               />
             ) : (
               <div className={readClass}>{caregiver.notifications ?? "N/A"}</div>
@@ -273,41 +302,41 @@ export function SettingsTab({
       </div>
 
       <div className="bg-white rounded-xl border border-slate-200 p-6">
-        <h2 className="text-sm font-semibold text-slate-700 mb-4">Agent Configuration</h2>
+        <h2 className="text-sm font-semibold text-slate-700 mb-4">{t.settings.agentConfig}</h2>
         <div className="space-y-3">
           <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1">Agent Status</label>
+            <label className="block text-xs font-medium text-slate-600 mb-1">{t.settings.agentStatus}</label>
             <div className="flex items-center gap-2">
               <div
                 className={`px-3 py-2 flex-1 bg-slate-50 border border-slate-200 rounded-lg text-sm ${agentPaused ? "text-amber-600" : "text-green-600"}`}
               >
-                {agentPaused ? "Paused" : "Active"}
+                {agentPaused ? t.status.paused : t.status.active}
               </div>
               <button
                 onClick={onTogglePause}
                 className={`px-4 py-2 rounded-lg text-sm font-medium cursor-pointer transition-all ${agentPaused ? "bg-green-500 text-white hover:bg-green-600" : "bg-amber-500 text-white hover:bg-amber-600"}`}
               >
-                {agentPaused ? "Resume Agent" : "Pause Agent"}
+                {agentPaused ? t.actions.resume : t.actions.pause}
               </button>
             </div>
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1">LLM Provider</label>
+            <label className="block text-xs font-medium text-slate-600 mb-1">{t.wallet.llmProvider}</label>
             <div className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono">
-              {agentInfo?.llm || "Not connected"}
+              {agentInfo?.llm || t.settings.notConnected}
             </div>
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1">Network</label>
+            <label className="block text-xs font-medium text-slate-600 mb-1">{t.wallet.network}</label>
             <div className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm">
               {agentInfo?.network || "stellar:testnet"}
             </div>
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1">Agent Wallet</label>
+            <label className="block text-xs font-medium text-slate-600 mb-1">{t.wallet.agentWallet}</label>
             <div className="flex items-center gap-2">
               <code className="flex-1 px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono break-all">
-                {agentInfo?.agentWallet || "Not connected"}
+                {agentInfo?.agentWallet || t.settings.notConnected}
               </code>
               {agentInfo?.agentWallet && (
                 <button

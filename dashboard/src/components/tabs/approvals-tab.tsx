@@ -4,21 +4,26 @@ import { useState, useEffect } from "react";
 import { Btn } from "../primitives/btn";
 import { Card } from "../primitives/card";
 import type { Transaction } from "../types";
+import { AGENT_URL } from "../../lib/agent-url";
+import { agentFetch } from "../../lib/agent-fetch";
+import { formatDateTime, type Locale } from "../../i18n";
 
-const AGENT_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3004";
 
 export interface ApprovalsTabProps {
   agentConnected: boolean;
+  // #1139 — defaults to "en" so existing callers that don't pass a locale
+  // render identically to before this change.
+  locale?: Locale;
 }
 
-export function ApprovalsTab({ agentConnected }: ApprovalsTabProps) {
+export function ApprovalsTab({ agentConnected, locale = "en" }: ApprovalsTabProps) {
   const [approvals, setApprovals] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(false);
   const [, setTick] = useState(0);
 
   const fetchApprovals = async () => {
     try {
-      const res = await fetch(`${AGENT_URL}/agent/pending-approvals`);
+      const res = await agentFetch(`${AGENT_URL}/agent/pending-approvals`);
       if (!res.ok) return;
       const data = await res.json();
       setApprovals(data.approvals || []);
@@ -39,7 +44,7 @@ export function ApprovalsTab({ agentConnected }: ApprovalsTabProps) {
   const handleApprove = async (txId: string) => {
     setLoading(true);
     try {
-      const res = await fetch(`${AGENT_URL}/agent/approvals/${txId}`, {
+      const res = await agentFetch(`${AGENT_URL}/agent/approvals/${txId}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ approve: true }),
@@ -53,7 +58,7 @@ export function ApprovalsTab({ agentConnected }: ApprovalsTabProps) {
   const handleCancel = async (txId: string) => {
     setLoading(true);
     try {
-      const res = await fetch(`${AGENT_URL}/agent/approvals/${txId}`, {
+      const res = await agentFetch(`${AGENT_URL}/agent/approvals/${txId}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ approve: false }),
@@ -98,7 +103,7 @@ export function ApprovalsTab({ agentConnected }: ApprovalsTabProps) {
                       Amount: ${tx.amount.toFixed(2)} | Category: {tx.category}
                     </div>
                     <div className="text-xs text-slate-400 mt-1">
-                      {new Date(tx.timestamp).toLocaleString()}
+                      {formatDateTime(new Date(tx.timestamp), locale)}
                     </div>
                     {tx.pendingUntil && (
                       <div className="text-xs text-amber-600 mt-1">

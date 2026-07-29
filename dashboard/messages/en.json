@@ -12,14 +12,11 @@
     "pause": "Pause",
     "resume": "Resume"
   },
-  "wallet": {
-    "agentWallet": "Agent Wallet (USDC)",
-    "careRecipient": "Care Recipient"
-  },
   "tabs": {
     "overview": "Overview",
     "medications": "Medications",
     "bills": "Bills",
+    "approvals": "Approvals",
     "policy": "Policy",
     "wallet": "Wallet",
     "activity": "Activity",
@@ -75,12 +72,13 @@
   },
   "policy": {
     "title": "Spending Policy for Rosa",
-    "description": "These limits are enforced by Soroban smart contracts on Stellar. The agent cannot exceed them.",
+    "description": "These limits are enforced server-side by the CareGuard agent before every payment.",
     "dailyLimit": "Daily Spending Limit ($)",
     "monthlyLimit": "Monthly Spending Limit ($)",
     "medicationBudget": "Medication Monthly Budget ($)",
     "billBudget": "Bill Monthly Budget ($)",
     "approvalThreshold": "Caregiver Approval Threshold ($)",
+    "holdTime": "Hold Time Before Auto-Approval (seconds)",
     "refresh": "Refresh from server",
     "discard": "Discard changes",
     "updatePolicy": "Update Policy",
@@ -102,6 +100,8 @@
   "wallet": {
     "title": "Agent Wallet",
     "description": "This is the AI agent's Stellar wallet. It holds USDC for paying pharmacies, medical bills, and API query fees. All balances are on Stellar testnet.",
+    "agentWallet": "Agent Wallet (USDC)",
+    "careRecipient": "Care Recipient",
     "usdcBalance": "USDC Balance",
     "xlmBalance": "XLM Balance",
     "walletAddress": "Wallet Address",

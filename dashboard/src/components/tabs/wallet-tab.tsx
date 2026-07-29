@@ -4,14 +4,31 @@ import { useState } from "react";
 import { copyText } from "../../lib/clipboard";
 import { Toast } from "../primitives/toast";
 import type { AgentInfo } from "../types";
+import { EXPLORER_ACCOUNT_URL, NETWORK_LABEL } from "../../lib/stellar-network";
+import { getTranslations, type Locale } from "../../i18n";
 
 export interface WalletTabProps {
   agentInfo: AgentInfo | null;
   walletBalance: string | null;
   walletXlm: string | null;
+  walletBalanceState?: 'loading' | 'ok' | 'error';
+  walletBalanceError?: string | null;
+  loadingWalletBalance?: boolean;
+  onRetryWalletBalance?: () => void;
+  locale?: Locale;
 }
 
-export function WalletTab({ agentInfo, walletBalance, walletXlm }: WalletTabProps) {
+export function WalletTab({
+  agentInfo,
+  walletBalance,
+  walletXlm,
+  walletBalanceState = 'loading',
+  walletBalanceError,
+  loadingWalletBalance = false,
+  onRetryWalletBalance,
+  locale = "en",
+}: WalletTabProps) {
+  const t = getTranslations(locale);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [toastFallback, setToastFallback] = useState<string | undefined>(undefined);
@@ -44,45 +61,70 @@ export function WalletTab({ agentInfo, walletBalance, walletXlm }: WalletTabProp
         }}
       />
       <div className="bg-white rounded-xl border border-slate-200 p-6">
-        <h2 className="text-sm font-semibold text-slate-700 mb-4">Agent Wallet</h2>
+        <h2 className="text-sm font-semibold text-slate-700 mb-4">{t.wallet.title}</h2>
         <p className="text-xs text-slate-500 mb-4">
-          This is the AI agent&apos;s Stellar wallet. It holds USDC for paying
-          pharmacies, medical bills, and API query fees. All balances are on
-          Stellar testnet.
+          {t.wallet.description}
         </p>
         <div className="grid grid-cols-2 gap-4 mb-6">
-          <div className="bg-sky-50 rounded-lg p-4 text-center border border-sky-200">
-            <div className="text-2xl font-bold text-sky-700">
-              ${walletBalance ?? "0.00"}
+          {walletBalanceState === 'loading' && (
+            <div className="bg-sky-50 rounded-lg p-4 text-center border border-sky-200 col-span-2">
+              <div className="text-sm font-medium text-sky-600">
+                <span className="inline-block w-4 h-4 border-2 border-sky-600 border-t-transparent rounded-full animate-spin mr-2 align-middle" />
+                {t.common.loading}
+              </div>
             </div>
-            <div className="text-xs text-slate-500 mt-1">USDC Balance</div>
-          </div>
-          <div className="bg-slate-50 rounded-lg p-4 text-center border border-slate-200">
-            <div className="text-2xl font-bold text-slate-700">
-              {walletXlm ?? "0.00"}
+          )}
+          {walletBalanceState === 'error' && (
+            <div className="bg-red-50 rounded-lg p-4 text-center border border-red-200 col-span-2">
+              <div className="text-sm font-medium text-red-700 mb-2">
+                {walletBalanceError || t.common.error}
+              </div>
+              {onRetryWalletBalance && (
+                <button
+                  onClick={onRetryWalletBalance}
+                  disabled={loadingWalletBalance}
+                  className="px-4 py-1.5 bg-red-100 text-red-700 rounded-lg text-xs font-medium hover:bg-red-200 disabled:opacity-50 cursor-pointer transition-all"
+                >
+                  {loadingWalletBalance ? `${t.common.retry}...` : t.common.retry}
+                </button>
+              )}
             </div>
-            <div className="text-xs text-slate-500 mt-1">XLM Balance</div>
-          </div>
+          )}
+          {walletBalanceState === 'ok' && (
+            <>
+              <div className="bg-sky-50 rounded-lg p-4 text-center border border-sky-200">
+                <div className="text-2xl font-bold text-sky-700">
+                  ${walletBalance ?? "0.00"}
+                </div>
+                <div className="text-xs text-slate-500 mt-1">{t.wallet.usdcBalance}</div>
+              </div>
+              <div className="bg-slate-50 rounded-lg p-4 text-center border border-slate-200">
+                <div className="text-2xl font-bold text-slate-700">
+                  {walletXlm ?? "0.00"}
+                </div>
+                <div className="text-xs text-slate-500 mt-1">{t.wallet.xlmBalance}</div>
+              </div>
+            </>
+          )}
         </div>
         <div className="space-y-3">
           <div>
             <label className="block text-xs font-medium text-slate-600 mb-1">
-              Wallet Address
+              {t.wallet.walletAddress}
             </label>
             <div className="flex items-center gap-2">
               <code className="flex-1 px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono break-all">
-                {agentInfo?.agentWallet || "Not connected"}
+                {agentInfo?.agentWallet || t.settings.notConnected}
               </code>
               {agentInfo?.agentWallet && (
                 <button
                   onClick={() =>
                     handleCopy(agentInfo.agentWallet, "wallet-address")
                   }
-                  className={`px-3 py-2 rounded-lg text-xs font-medium transition-all cursor-pointer ${
-                    copiedId === "wallet-address"
+                  className={`px-3 py-2 rounded-lg text-xs font-medium transition-all cursor-pointer ${copiedId === "wallet-address"
                       ? "bg-green-100 text-green-700"
                       : "bg-slate-100 text-slate-600 hover:bg-slate-200"
-                  }`}
+                    }`}
                 >
                   {copiedId === "wallet-address" ? "Copied" : "Copy"}
                 </button>
@@ -91,30 +133,30 @@ export function WalletTab({ agentInfo, walletBalance, walletXlm }: WalletTabProp
           </div>
           <div>
             <label className="block text-xs font-medium text-slate-600 mb-1">
-              Network
+              {t.wallet.network}
             </label>
             <div className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs">
-              Stellar Testnet
+              {NETWORK_LABEL}
             </div>
           </div>
           <div>
             <label className="block text-xs font-medium text-slate-600 mb-1">
-              LLM Provider
+              {t.wallet.llmProvider}
             </label>
             <div className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs">
-              {agentInfo?.llm || "Not connected"}
+              {agentInfo?.llm || t.settings.notConnected}
             </div>
           </div>
         </div>
         <div className="mt-6 flex gap-3">
           {agentInfo?.agentWallet && (
             <a
-              href={`https://stellar.expert/explorer/testnet/account/${agentInfo.agentWallet}`}
+              href={`${EXPLORER_ACCOUNT_URL}/${agentInfo.agentWallet}`}
               target="_blank"
               rel="noopener noreferrer"
               className="flex-1 text-center px-4 py-2 bg-sky-500 text-white rounded-lg text-sm font-medium hover:bg-sky-600 active:bg-sky-700 cursor-pointer transition-all"
             >
-              View on Stellar Explorer
+              {t.wallet.viewExplorer}
             </a>
           )}
           <a
@@ -123,14 +165,14 @@ export function WalletTab({ agentInfo, walletBalance, walletXlm }: WalletTabProp
             rel="noopener noreferrer"
             className="flex-1 text-center px-4 py-2 bg-slate-100 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-200 active:bg-slate-300 cursor-pointer transition-all"
           >
-            Fund with USDC
+            {t.wallet.fund}
           </a>
         </div>
       </div>
 
       <div className="bg-white rounded-xl border border-slate-200 p-6">
         <h2 className="text-sm font-semibold text-slate-700 mb-3">
-          How Payments Work
+          {t.wallet.howPayments}
         </h2>
         <div className="space-y-3 text-xs text-slate-600">
           <div className="flex gap-3 items-start">
