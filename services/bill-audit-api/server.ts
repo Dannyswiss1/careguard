@@ -144,8 +144,12 @@ function checkRatesFreshness() {
   }
 }
 
-// Check freshness at boot
+// Check freshness at boot, then daily — a long-running process that started
+// before RATES_VALID_UNTIL would otherwise never notice the rates going stale.
+const RATES_FRESHNESS_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 checkRatesFreshness();
+const ratesFreshnessInterval = setInterval(checkRatesFreshness, RATES_FRESHNESS_CHECK_INTERVAL_MS);
+ratesFreshnessInterval.unref();
 
 interface BillItem { description: string; cptCode: string; quantity: number; chargedAmount: number; }
 

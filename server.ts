@@ -27,6 +27,7 @@ import { applySecurityMiddleware } from "./shared/security-middleware.ts";
 import { createApiDocsRouter } from "./shared/api-docs.ts";
 import { logger } from "./shared/logger.ts";
 import { requireApiKey } from "./shared/auth.ts";
+import { createPharmacyAdminAuth } from "./shared/pharmacy-admin-auth.ts";
 import { validateTask, getSuspiciousTaskCount } from "./shared/task-validation.ts";
 import {
   BillAuditValidationError,
@@ -354,27 +355,7 @@ const PHARMACY_ADMIN_TOKEN = process.env.PHARMACY_ADMIN_TOKEN || CAREGIVER_TOKEN
 const pharmacyStore = createPharmacyPricingStore();
 const recipientsStore = createCareRecipientsStore();
 
-function requirePharmacyAdmin(
-  req: express.Request,
-  res: express.Response,
-  next: express.NextFunction,
-) {
-  const auth = req.headers.authorization;
-  if (!auth?.startsWith("Bearer ")) {
-    res
-      .status(401)
-      .setHeader("WWW-Authenticate", "Bearer")
-      .json({ error: "Missing admin token" });
-    return;
-  }
-
-  if (auth.slice("Bearer ".length) !== PHARMACY_ADMIN_TOKEN) {
-    res.status(403).json({ error: "Invalid admin token" });
-    return;
-  }
-
-  next();
-}
+const requirePharmacyAdmin = createPharmacyAdminAuth(PHARMACY_ADMIN_TOKEN);
 
 app.get("/pharmacy/drugs", (_req, res) => {
   const drugs = pharmacyStore.listDrugs();
