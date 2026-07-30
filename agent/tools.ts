@@ -363,6 +363,10 @@ export async function submitTransactionWithFeeBump(
     }
     const built = builder.setTimeout(30).build();
     built.sign(signer);
+    const sigHint = built.signatures[0]?.hint();
+    if (!sigHint || !sigHint.equals(signer.signatureHint())) {
+      throw new Error(`Signer mismatch: expected ${signer.publicKey()} — refusing to submit`);
+    }
     return built;
   };
 
@@ -2171,26 +2175,6 @@ export async function payForMedication(
   }
 
   return { success: true, transaction: tx };
-}
-
-// Helper: build, sign, and submit a single USDC payment so payBill can retry on tx_bad_seq
-async function buildAndSubmitUsdcPayment(account: any, recipientKey: string, amount: number): Promise<string> {
-  const usdcAsset = new Asset("USDC", USDC_ISSUER);
-  const stellarTx = new TransactionBuilder(account, {
-    fee: "100",
-    networkPassphrase: Networks.TESTNET,
-  })
-    .addOperation(Operation.payment({ destination: recipientKey, asset: usdcAsset, amount: amount.toFixed(7) }))
-    .setTimeout(30)
-    .build();
-  stellarTx.sign(agentKeypair);
-  const sigHint = stellarTx.signatures[0]?.hint();
-  if (!sigHint || !sigHint.equals(agentKeypair.signatureHint())) {
-    throw new Error(`Signer mismatch: expected ${agentKeypair.publicKey()} — refusing to submit`);
-  }
-  console.log(`  [Stellar] Signer verified: ${agentKeypair.publicKey().slice(0, 8)}...`);
-  const result = await horizonServer.submitTransaction(stellarTx);
-  return (result as any).hash;
 }
 
 // --- Tool: Pay a medical bill via real Stellar USDC transfer ---
