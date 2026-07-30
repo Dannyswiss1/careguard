@@ -361,7 +361,7 @@ export async function submitTransactionWithFeeBump(
     for (const op of operations) {
       builder.addOperation(op);
     }
-    const built = builder.setTimeout(30).build();
+    const built = builder.setTimeout(STELLAR_TIMEBOUNDS_SECONDS).build();
     built.sign(signer);
     const sigHint = built.signatures[0]?.hint();
     if (!sigHint || !sigHint.equals(signer.signatureHint())) {
