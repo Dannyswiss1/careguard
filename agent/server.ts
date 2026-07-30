@@ -11,7 +11,6 @@
 import "dotenv/config";
 import { createHash } from "crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "fs";
-import { existsSync, mkdirSync } from "fs";
 import express, { type Express } from "express";
 import OpenAI from "openai";
 import { Keypair, Horizon } from "@stellar/stellar-sdk";

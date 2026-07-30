@@ -680,7 +680,7 @@ export const SpendingPolicySchema = z.object({
   { message: 'medicationMonthlyBudget + billMonthlyBudget cannot exceed monthlyLimit', path: ['medicationMonthlyBudget'] },
 );
 
-type SpendingPolicyInput = z.infer<typeof SpendingPolicySchema>;
+type SpendingPolicyInput = z.input<typeof SpendingPolicySchema>;
 
 const SPENDING_CACHE_TTL_MS = 5000;
 /** Compact the JSONL log into a snapshot every this many transactions (Issue #205). */
