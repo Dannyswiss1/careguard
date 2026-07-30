@@ -31,5 +31,8 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      - name: Run tests
+      - name: Run root tests
         run: npm test
+
+      - name: Run dashboard tests
+        run: npx vitest run --config dashboard/vitest.config.ts
