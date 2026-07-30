@@ -87,6 +87,7 @@
   "activity": {
     "title": "Transaction Log",
     "downloadReport": "Download Report",
+    "preparingReport": "Preparing report…",
     "reset": "Reset All",
     "noActivity": "No agent activity yet...",
     "noTransactions": "No transactions yet",
