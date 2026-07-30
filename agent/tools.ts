@@ -286,6 +286,7 @@ export async function submitTransactionWithRetry(
             break;
           }
           stellarTxBadSeqRetriesTotal.inc();
+          paybillSeqRetryTotal++;
           logger.warn(
             { seq: tx?.sequence, attempt: seqRetry + 1, reason: "tx_bad_seq" },
             "[Stellar] tx_bad_seq — reloaded account, retrying",
