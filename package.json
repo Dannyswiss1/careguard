@@ -23,6 +23,7 @@
     "gen-openapi": "node --import tsx scripts/gen-openapi.ts",
     "validate:openapi": "node --import tsx scripts/validate-openapi.ts",
     "test": "vitest run",
+    "test:all": "vitest run --workspace=vitest.workspace.ts",
     "test:watch": "vitest",
     "e2e": "cd dashboard && npx playwright test --config ../e2e/playwright.config.ts",
     "load": "k6 run load/agent-run.js",

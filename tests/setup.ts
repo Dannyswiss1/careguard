@@ -59,9 +59,26 @@ export function createHorizonMock() {
   };
 }
 
+vi.mock("next/navigation", () => {
+  const searchParams = new URLSearchParams();
+  return {
+    useSearchParams: () => searchParams,
+    usePathname: () => "/",
+    useRouter: () => ({
+      push: vi.fn(),
+      replace: vi.fn(),
+      prefetch: vi.fn(),
+      back: vi.fn(),
+      forward: vi.fn(),
+      refresh: vi.fn(),
+    }),
+  };
+});
+
 afterEach(() => {
   const dir = process.env.DATA_DIR;
   if (dir && fs.existsSync(dir)) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
