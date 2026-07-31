@@ -28,7 +28,7 @@
 
 import 'dotenv/config';
 import { fileURLToPath } from 'url';
-import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, renameSync, promises as fsPromises } from 'fs';
+import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, readdirSync, renameSync, promises as fsPromises } from 'fs';
 import { z } from 'zod';
 import { logger } from '../shared/logger.ts';
 import { resolveStellarNetwork, validateSignerKeyForNetwork } from '../shared/stellar-network.ts';
@@ -145,7 +145,7 @@ if (STELLAR_CONFIG.networkType === 'public' && !process.env.USDC_ISSUER) {
 }
 
 const MIN_FEE_STROOPS = 100;
-const MAX_FEE_STROOPS = parseInt(process.env.MAX_FEE_STROOPS || '100000');
+const MAX_FEE_STROOPS = parseInt(process.env.MAX_FEE_STROOPS || '100000', 10);
 const STELLAR_TIMEBOUNDS_SECONDS = parseInt(process.env.STELLAR_TIMEBOUNDS_SECONDS || "60", 10);
 
 // Overall wall-clock budget for the fee-bump + retry path (issue #797):
@@ -991,7 +991,7 @@ function getSubmissionMutex(keypairId: string): AsyncMutex {
   return m;
 }
 
-const MAX_PAYMENT = 1000;
+export const MAX_PAYMENT = 1000;
 // Platform-level single-transaction cap (issue #83). Sits above the caregiver policy's
 // approvalThreshold so a compromised session cannot bypass it. Only changeable by redeploying.
 // Read on every call so tests can override process.env.MAX_SINGLE_TX_USDC between runs.
@@ -1964,19 +1964,38 @@ export function cancelPendingTransaction(txId: string): any {
   return { success: true, transaction: tx };
 }
 
-export async function processPendingTransactions() {
-  const tracker = spendingTracker;
-  const now = Date.now();
-  const pending = tracker.transactions.filter(
-    (t: any) =>
-      t.status === 'pending' &&
-      t.pendingUntil &&
-      new Date(t.pendingUntil).getTime() <= now,
-  );
-  for (const tx of pending) {
-    await approvePendingTransaction(tx.id);
+/** All recipient IDs with a persisted data directory on disk (Issue #1075). */
+function listRecipientIds(): string[] {
+  try {
+    return readdirSync(`${getDataDir()}/recipients`, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+  } catch {
+    return [];
   }
-  return { processed: pending.map((t: any) => t.id) };
+}
+
+export async function processPendingTransactions() {
+  const previousRecipientId = currentRecipientId;
+  const now = Date.now();
+  const processed: string[] = [];
+
+  for (const recipientId of listRecipientIds()) {
+    setCurrentRecipient(recipientId);
+    const pending = spendingTracker.transactions.filter(
+      (t: any) =>
+        t.status === 'pending' &&
+        t.pendingUntil &&
+        new Date(t.pendingUntil).getTime() <= now,
+    );
+    for (const tx of pending) {
+      await approvePendingTransaction(tx.id);
+      processed.push(tx.id);
+    }
+  }
+
+  setCurrentRecipient(previousRecipientId);
+  return { processed };
 }
 
 // --- Tool: Pay for medication via MPP Charge (real Stellar payment) ---
@@ -2694,14 +2713,14 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'pay_for_medication',
     description:
-      'Pay a pharmacy for a medication order via MPP Charge on Stellar (real USDC payment). Subject to spending policy limits. Amount must be between $0.01 and $10,000. If the payment is blocked by spending policy, the result includes a budgetContext object { reason, attempted, dailyRemaining, monthlyRemaining, suggestion }: relay it to the caregiver so they can either approve a one-time override or pick a cheaper option within the remaining budget.',
+      `Pay a pharmacy for a medication order via MPP Charge on Stellar (real USDC payment). Subject to spending policy limits. Amount must be between $0.01 and $${MAX_PAYMENT}. If the payment is blocked by spending policy, the result includes a budgetContext object { reason, attempted, dailyRemaining, monthlyRemaining, suggestion }: relay it to the caregiver so they can either approve a one-time override or pick a cheaper option within the remaining budget.`,
     input_schema: strictInputSchema({
       type: 'object' as const,
       properties: {
         pharmacy_id: { type: 'string' },
         pharmacy_name: { type: 'string' },
         drug_name: { type: 'string' },
-        amount: { type: 'number', description: 'Payment amount in USD (min: 0.01, max: 10000)' },
+        amount: { type: 'number', description: `Payment amount in USD (min: 0.01, max: ${MAX_PAYMENT})` },
         days_supply: { type: 'number', description: 'Days supply for adherence tracking (default: 30)' },
         recipient_id: { type: 'string', description: 'Care recipient ID (default: rosa)' },
       },
@@ -2711,14 +2730,14 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'pay_bill',
     description:
-      'Pay a medical bill via direct Stellar USDC transfer. Subject to spending policy limits. If the bill has been audited and errors found, pay only the corrected amount. Amount must be between $0.01 and $10,000.',
+      `Pay a medical bill via direct Stellar USDC transfer. Subject to spending policy limits. If the bill has been audited and errors found, pay only the corrected amount. Amount must be between $0.01 and $${MAX_PAYMENT}.`,
     input_schema: strictInputSchema({
       type: 'object' as const,
       properties: {
         provider_id: { type: 'string' },
         provider_name: { type: 'string' },
         description: { type: 'string' },
-        amount: { type: 'number', description: 'Payment amount in USD (min: 0.01, max: 10000)' },
+        amount: { type: 'number', description: `Payment amount in USD (min: 0.01, max: ${MAX_PAYMENT})` },
         recipient_id: { type: 'string', description: 'Care recipient ID (default: rosa)' },
       },
       required: ['provider_id', 'provider_name', 'description', 'amount'],

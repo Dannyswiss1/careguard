@@ -914,12 +914,20 @@ app.get("/agent/spending", (_req, res) => {
   res.json(getSpendingSummary());
 });
 app.get("/agent/transactions", (req, res) => {
-  const limit = parseInt(req.query.limit as string) || 25;
-  const offset = parseInt(req.query.offset as string) || 0;
+  const parsedLimit = parseInt(req.query.limit as string, 10);
+  const limit = Number.isFinite(parsedLimit) ? parsedLimit : 25;
+  const parsedOffset = parseInt(req.query.offset as string, 10);
+  const offset = Number.isFinite(parsedOffset) ? parsedOffset : 0;
   const tracker = getSpendingTracker();
   const totalTransactions = tracker.transactions.length;
+  // Compute clamped indices explicitly rather than relying on slice()'s
+  // negative-index handling, which treats -0 (e.g. offset=0, limit=0) as
+  // literal index 0 instead of "end of array" and silently returns
+  // everything instead of nothing.
+  const end = Math.max(totalTransactions - offset, 0);
+  const start = Math.max(end - limit, 0);
   const paginatedTransactions = tracker.transactions
-    .slice(-offset - limit, -offset || undefined)
+    .slice(start, end)
     .reverse();
 
   res.json({
