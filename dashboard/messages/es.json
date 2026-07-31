@@ -87,6 +87,7 @@
   "activity": {
     "title": "Registro de Transacciones",
     "downloadReport": "Descargar Informe",
+    "preparingReport": "Preparando informe…",
     "reset": "Reiniciar Todo",
     "noActivity": "Sin actividad del agente...",
     "noTransactions": "Sin transacciones",

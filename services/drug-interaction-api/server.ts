@@ -26,7 +26,7 @@ import {
 } from "./logic.ts";
 import type { DrugInteractionsQuery } from "./logic.ts";
 
-const PORT = parseInt(process.env.DRUG_INTERACTION_API_PORT || "3003");
+const PORT = parseInt(process.env.DRUG_INTERACTION_API_PORT || "3003", 10);
 const PAY_TO = process.env.PHARMACY_2_PUBLIC_KEY;
 
 if (!PAY_TO) throw new Error("PHARMACY_2_PUBLIC_KEY required in .env");

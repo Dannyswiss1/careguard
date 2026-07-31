@@ -181,16 +181,17 @@ export function generateSpec(): OpenAPISpec {
     ],
     security: [
       {
-        X402Auth: [],
+        CaregiverBearerAuth: [],
       },
     ],
     components: {
       securitySchemes: {
-        X402Auth: {
+        CaregiverBearerAuth: {
           type: "http",
           scheme: "bearer",
+          bearerFormat: "token",
           description:
-            "x402 payment protocol. Include X-PAYMENT header with payment proof on protected routes.",
+            "Bearer token used to authorize caregiver access to /agent/* endpoints. Set CAREGIVER_TOKEN in environment variables.",
         },
       },
       schemas: {

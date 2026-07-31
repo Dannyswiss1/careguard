@@ -31,7 +31,7 @@ import { requestLoggerMiddleware } from "../../shared/request-logger.ts";
 import { sanitizeUserString } from "../../shared/sanitize.ts";
 import { billAuditOversizedRejectionsTotal } from "../../shared/metrics.ts";
 
-const PORT = parseInt(process.env.BILL_AUDIT_API_PORT || "3002");
+const PORT = parseInt(process.env.BILL_AUDIT_API_PORT || "3002", 10);
 const PAY_TO = process.env.BILL_PROVIDER_PUBLIC_KEY;
 
 if (!PAY_TO) throw new Error("BILL_PROVIDER_PUBLIC_KEY required in .env");

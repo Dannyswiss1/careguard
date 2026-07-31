@@ -63,6 +63,10 @@ export function DashboardTabsNav({ activeTab, pathname, locale = "en" }: Dashboa
         const isActive = activeTab === tab;
         const href = tab === "overview" ? pathname : `${pathname}?tab=${tab}`;
         return (
+          // Issue #1124: We use next/link for bookmarkable URLs despite role="tab"
+          // and a roving tabIndex. Screen readers' "browse by link" may bypass the 
+          // tabIndex=-1, but activating the link will correctly navigate, making it
+          // an acceptable trade-off for shareable URLs.
           <Link
             key={tab}
             href={href}

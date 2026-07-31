@@ -19,7 +19,14 @@ export interface ActivityTabProps {
   recipient: RecipientProfile;
   agentLog: AgentLogEntry[];
   setAgentLog: (entries: AgentLogEntry[]) => void;
+  /**
+   * Transactions for the page currently in view — NOT the full history, despite
+   * the name (useAgentState replaces this array on every page change). Use
+   * fetchAllTransactions when the complete history is needed.
+   */
   allTransactions: Transaction[];
+  /** Fetches the complete transaction history on demand, for the PDF export. */
+  fetchAllTransactions?: () => Promise<Transaction[]>;
   auditEvents?: AuditLogEvent[];
   pagination: PaginationData | null;
   currentPage: number;
@@ -38,6 +45,7 @@ export function ActivityTab({
   agentLog,
   setAgentLog,
   allTransactions,
+  fetchAllTransactions,
   auditEvents = [],
   pagination,
   currentPage,
@@ -50,7 +58,41 @@ export function ActivityTab({
 }: ActivityTabProps) {
   const [showAllLogEntries, setShowAllLogEntries] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [preparingReport, setPreparingReport] = useState(false);
   const t = getTranslations(locale).activity;
+
+  // Reset clears the whole history, so count from pagination when it is known
+  // rather than from the page in view.
+  const totalTransactions = pagination?.total ?? allTransactions.length;
+
+  // The visible page is only part of the history once pagination kicks in, so
+  // "Download Report" pulls every page before building the PDF. When everything
+  // already fits on one page (the common case) no extra request is made.
+  const handleDownloadReport = async () => {
+    const hasUnloadedPages =
+      Boolean(fetchAllTransactions) &&
+      pagination !== null &&
+      pagination.total > allTransactions.length;
+
+    if (!hasUnloadedPages) {
+      downloadTransactionPDF(allTransactions, spending, { recipient });
+      return;
+    }
+
+    setPreparingReport(true);
+    try {
+      const full = await fetchAllTransactions!();
+      downloadTransactionPDF(full.length > 0 ? full : allTransactions, spending, {
+        recipient,
+      });
+    } catch {
+      // Fall back to the visible page rather than leaving the caregiver with
+      // no report at all.
+      downloadTransactionPDF(allTransactions, spending, { recipient });
+    } finally {
+      setPreparingReport(false);
+    }
+  };
 
   // allTransactions arrives pre-sorted newest-first from fetchTransactions (#220).
   // useMemo ensures the merge only reruns when transactions or audit events change,
@@ -95,7 +137,7 @@ export function ActivityTab({
       <ConfirmDialog
         open={confirmOpen}
         title="Reset all agent data?"
-        description={`This will delete ${allTransactions.length} transaction${allTransactions.length === 1 ? "" : "s"
+        description={`This will delete ${totalTransactions} transaction${totalTransactions === 1 ? "" : "s"
           }, the agent log, and all audit results. This cannot be undone.`}
         confirmLabel="Delete everything"
         cancelLabel="Cancel"
@@ -111,12 +153,12 @@ export function ActivityTab({
         <div className="flex items-center gap-3">
           {allTransactions.length > 0 && (
             <button
-              onClick={() =>
-                downloadTransactionPDF(allTransactions, spending, { recipient })
-              }
-              className="px-3 py-1.5 bg-sky-50 text-sky-700 rounded-lg text-xs font-medium hover:bg-sky-100 active:bg-sky-200 cursor-pointer transition-all"
+              onClick={handleDownloadReport}
+              disabled={preparingReport}
+              aria-busy={preparingReport}
+              className="px-3 py-1.5 bg-sky-50 text-sky-700 rounded-lg text-xs font-medium hover:bg-sky-100 active:bg-sky-200 cursor-pointer transition-all disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              {t.downloadReport}
+              {preparingReport ? t.preparingReport : t.downloadReport}
             </button>
           )}
           <button
