@@ -71,5 +71,5 @@ After scrubbing, force-push to all branches and notify collaborators to rebase.
 
 ## Disaster Recovery & Backups
 
-For backup cadences, recovery targets (RTO/RPO), restore procedures, and audit log integrity verification, refer to the [Backup and Disaster Recovery Runbook](file:///Users/favoureze/careguard/docs/runbooks/backup-restore.md).
+For backup cadences, recovery targets (RTO/RPO), restore procedures, and audit log integrity verification, refer to the [Backup and Disaster Recovery Runbook](file:///Users/favoureze/careguard/docs/runbooks/backup-restore.md). For detailed JSONL record schemas, hash-chain fields, log rotation behavior, and verification algorithms, see [`docs/data/audit-log-schema.md`](./audit-log-schema.md).
 

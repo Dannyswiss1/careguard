@@ -36,7 +36,7 @@ Key design elements of the system:
 
 ### JSONL Record Shape
 
-Each entry is saved as a single JSON line with the following schema (validated via TypeScript interfaces and normalized JSON formats):
+Each entry is saved as a single JSON line with the schema documented in detail in [`docs/data/audit-log-schema.md`](../data/audit-log-schema.md):
 
 ```json
 {
