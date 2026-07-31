@@ -28,8 +28,11 @@ export function BillsTab({ agentResult, recipient, locale = "en" }: BillsTabProp
       t.tool === "audit_medical_bill" || t.tool === "fetch_and_audit_bill",
   );
 
-  const handleDispute = useCallback(async (auditResult: any, index: number) => {
-    setGeneratingDispute(`dispute-${index}`);
+  const auditCallKey = (tc: NonNullable<typeof auditCalls>[number]) =>
+    tc.id ?? `${tc.tool}-${JSON.stringify(tc.input)}`;
+
+  const handleDispute = useCallback(async (auditResult: any, auditKey: string) => {
+    setGeneratingDispute(auditKey);
     try {
       const letter: DisputeLetter = {
         billId: `bill-${Date.now()}`,
@@ -73,9 +76,10 @@ export function BillsTab({ agentResult, recipient, locale = "en" }: BillsTabProp
       className="space-y-6"
     >
       {auditCalls && auditCalls.length > 0 ? (
-        auditCalls.map((tc, i) => (
+        auditCalls.map((tc) => (
           <div
-            key={i}
+            // The tool-call ID (or legacy payload composite) stays stable across list reordering.
+            key={auditCallKey(tc)}
             className="bg-white rounded-xl border border-slate-200 p-6"
           >
             <div className="flex items-center justify-between mb-4">
@@ -101,11 +105,11 @@ export function BillsTab({ agentResult, recipient, locale = "en" }: BillsTabProp
                 {tc.result.errorCount > 0 && (
                   <>
                     <button
-                      onClick={() => handleDispute(tc.result, i)}
-                      disabled={generatingDispute === `dispute-${i}`}
+                      onClick={() => handleDispute(tc.result, auditCallKey(tc))}
+                      disabled={generatingDispute === auditCallKey(tc)}
                       className="px-3 py-1.5 bg-red-50 text-red-700 rounded-lg text-xs font-medium hover:bg-red-100 active:bg-red-200 cursor-pointer transition-all disabled:opacity-50"
                     >
-                      {generatingDispute === `dispute-${i}` ? "Generating..." : "Dispute"}
+                      {generatingDispute === auditCallKey(tc) ? "Generating..." : "Dispute"}
                     </button>
                     <button
                       onClick={() => handleDisputeEmail(tc.result)}
@@ -149,6 +153,7 @@ export function BillsTab({ agentResult, recipient, locale = "en" }: BillsTabProp
               </span>
               <button
                 onClick={() => setShowErrorsOnly(!showErrorsOnly)}
+                aria-pressed={showErrorsOnly}
                 className="text-xs text-sky-600 hover:text-sky-800 cursor-pointer"
               >
                 {showErrorsOnly ? b.showAll : b.showErrors}

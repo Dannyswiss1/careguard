@@ -101,9 +101,10 @@ export function BillLineItemsVirtualized({ lineItems }: BillLineItemsVirtualized
         >
           {virtualizer.getVirtualItems().map((virtualItem) => {
             const item = lineItems[virtualItem.index];
+            const stableKey = `${item.description}:${item.cptCode ?? ""}:${item.chargedAmount}`;
             return (
               <div
-                key={virtualItem.index}
+                key={stableKey}
                 style={{
                   position: "absolute",
                   top: 0,

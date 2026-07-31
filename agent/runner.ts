@@ -81,7 +81,7 @@ export interface RunAgentOptions {
 
 export interface RunAgentResult {
   response: string;
-  toolCalls: Array<{ tool: string; input: Record<string, unknown>; result: ToolResult }>;
+  toolCalls: Array<{ id: string; tool: string; input: Record<string, unknown>; result: ToolResult }>;
   spending: ReturnType<typeof getSpendingSummary>;
   llmUsage: { promptTokens: number; completionTokens: number };
   truncated: boolean;
@@ -311,7 +311,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
     { role: "user", content: userTask },
   ];
 
-  const toolCalls: Array<{ tool: string; input: Record<string, unknown>; result: ToolResult }> = [];
+  const toolCalls: Array<{ id: string; tool: string; input: Record<string, unknown>; result: ToolResult }> = [];
   let finalResponse = "";
   let llmUsage = { promptTokens: 0, completionTokens: 0 };
   let runToolCalls = 0;
@@ -427,11 +427,11 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
       let result: ToolResult;
       try {
         result = await executeTool(fnName, fnArgs);
-        toolCalls.push({ tool: fnName, input: fnArgs, result });
+        toolCalls.push({ id: toolCall.id, tool: fnName, input: fnArgs, result });
       } catch (err: any) {
         logger.error({ tool: fnName, err: err.message }, "tool error");
         result = { error: err.message };
-        toolCalls.push({ tool: fnName, input: fnArgs, result });
+        toolCalls.push({ id: toolCall.id, tool: fnName, input: fnArgs, result });
       }
 
       appendAuditEntry({

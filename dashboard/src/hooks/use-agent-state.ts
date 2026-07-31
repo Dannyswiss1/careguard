@@ -68,6 +68,8 @@ export function useAgentState({ activeTab }: UseAgentStateOptions) {
   const [policyDirty, setPolicyDirty] = useState(false);
   const [policySaved, setPolicySaved] = useState(false);
   const [abortController, setAbortController] = useState<AbortController | null>(null);
+  const [approvals, setApprovals] = useState<Transaction[]>([]);
+  const [approvalsLoading, setApprovalsLoading] = useState(false);
 
   // Individual loading states for each data source (Issue #283)
   const [loadingAgentInfo, setLoadingAgentInfo] = useState(false);
@@ -89,6 +91,45 @@ export function useAgentState({ activeTab }: UseAgentStateOptions) {
   useEffect(() => {
     policyDirtyRef.current = policyDirty;
   }, [policyDirty]);
+
+  const fetchApprovals = useCallback(async () => {
+    try {
+      const res = await agentFetch(`${AGENT_URL}/agent/pending-approvals`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setApprovals(data.approvals || []);
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    if (activeTab !== 'approvals') return;
+    void fetchApprovals();
+    const interval = setInterval(fetchApprovals, 5000);
+    return () => clearInterval(interval);
+  }, [activeTab, fetchApprovals]);
+
+  const updateApproval = useCallback(async (txId: string, approve: boolean) => {
+    setApprovalsLoading(true);
+    try {
+      const res = await agentFetch(`${AGENT_URL}/agent/approvals/${txId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ approve }),
+      });
+      if (res.ok) await fetchApprovals();
+    } finally {
+      setApprovalsLoading(false);
+    }
+  }, [fetchApprovals]);
+
+  const approveTransaction = useCallback(
+    (txId: string) => updateApproval(txId, true),
+    [updateApproval],
+  );
+  const cancelTransaction = useCallback(
+    (txId: string) => updateApproval(txId, false),
+    [updateApproval],
+  );
 
   useEffect(() => {
     const connectionState = !agentConnected
@@ -248,6 +289,27 @@ export function useAgentState({ activeTab }: UseAgentStateOptions) {
     },
     [],
   );
+
+  // `allTransactions` only ever holds the page currently in view, because
+  // fetchTransactions replaces it on every page change. Exports that need the
+  // whole history fetch it on demand here: one request at offset 0 with a limit
+  // wide enough to cover pagination.total. No component state is touched, so the
+  // visible page is unaffected.
+  const fetchTransactionHistory = useCallback(async (): Promise<Transaction[]> => {
+    const total = pagination?.total ?? allTransactions.length;
+    const params = new URLSearchParams({
+      limit: String(Math.max(total, 1)),
+      offset: '0',
+    });
+    const res = await agentFetch(`${AGENT_URL}/agent/transactions?${params}`);
+    if (!res.ok) throw new Error(`Transactions returned ${res.status}`);
+    const data = await res.json();
+    return Array.isArray(data.transactions)
+      ? data.transactions
+          .map((t: unknown) => TransactionSchema.parse(t))
+          .sort((a: any, b: any) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+      : [];
+  }, [pagination, allTransactions.length]);
 
   // SSE: server pushes spending/transactions/status on state change (#274).
   // Falls back to polling when SSE is unavailable (old proxies, browsers without EventSource).
@@ -565,6 +627,8 @@ export function useAgentState({ activeTab }: UseAgentStateOptions) {
     policyDirty,
     setPolicyDirty,
     policySaved,
+    approvals,
+    approvalsLoading,
     // individual loading states (Issue #283)
     loadingAgentInfo,
     loadingSpending,
@@ -575,11 +639,14 @@ export function useAgentState({ activeTab }: UseAgentStateOptions) {
     transactionsError,
     // actions
     fetchSpending,
+    fetchTransactionHistory,
     runAgentTask,
     cancelAgentTask,
     updatePolicy,
     resetAgent,
     togglePause,
     addLogEntry,
+    approveTransaction,
+    cancelTransaction,
   };
 }

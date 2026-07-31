@@ -20,6 +20,7 @@ function buildProps(overrides: Partial<WalletTabProps> = {}): WalletTabProps {
     } as any,
     walletBalance: "42.50",
     walletXlm: "10.20",
+    walletBalanceState: "ok",
     ...overrides,
   };
 }
@@ -55,6 +56,17 @@ describe("WalletTab — balance display (Issue #49)", () => {
   it("Horizon error (both null) shows $0.00 placeholder for USDC", () => {
     render(<WalletTab {...buildProps({ walletBalance: null, walletXlm: null })} />);
     expect(screen.getByText("$0.00")).toBeTruthy();
+  });
+
+  it("shows loading spinner when walletBalanceState is 'loading'", () => {
+    const { container } = render(<WalletTab {...buildProps({ walletBalanceState: "loading" })} />);
+    // Relying on the loading spinner class or loading text
+    expect(container.querySelector(".animate-spin")).toBeTruthy();
+  });
+
+  it("shows error state when walletBalanceState is 'error'", () => {
+    render(<WalletTab {...buildProps({ walletBalanceState: "error", walletBalanceError: "Custom error" })} />);
+    expect(screen.getByText("Custom error")).toBeTruthy();
   });
 });
 

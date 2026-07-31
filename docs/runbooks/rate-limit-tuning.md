@@ -1,155 +1,335 @@
 # Runbook: Tuning Rate-Limit Thresholds Safely
 
-This runbook provides operator guidance for monitoring rate-limit metrics, tuning threshold environment variables safely, recognizing rate-limit-driven incidents, understanding per-endpoint policy interactions, and performing safe rollouts without locking out the CareGuard dashboard or starving background agents.
+**Symptom**
+
+One of two opposite failure modes, both reported the same way — a `429 Too
+Many Requests` response and, on the dashboard, a failed poll or a stuck
+"Connected" chip:
+
+1. **Threshold too tight (false positives)** — legitimate caregiver traffic
+   (dashboard polling, a burst of agent runs, a batch of bill audits) gets
+   throttled. `ratelimit_hits_total{policy="<name>"}` climbs in step with
+   normal usage, not with anything malicious.
+2. **Threshold too loose / real abuse** — a client hammers one endpoint
+   (most concerning on `pharmacy_order` or `bill_audit`, both money- and
+   payload-heavy) fast enough that rate limiting is the *only* thing
+   standing between it and the LLM provider, the bill-audit pipeline, or a
+   Stellar payment submission.
+
+This runbook covers reading `ratelimit_hits_total`/`route_concurrent_requests`
+to tell the two apart, and how to change a threshold in
+[`shared/rate-limit.ts`](../../shared/rate-limit.ts) without causing the
+first failure mode while fixing the second.
 
 ---
 
-## Symptom
+**Impact**
 
-- The dashboard shows repeated connection errors, failed API calls, or HTTP `429 Too Many Requests` responses.
-- Caregivers report that agent executions, bill audits, or pharmacy order attempts are unexpectedly failing or hanging.
-- Alerting fires on `ratelimit_hits_total` rates spiking in Prometheus or Grafana.
+- **Failure mode 1** (too tight): every caregiver polling the dashboard
+  behind the affected policy is degraded or blocked until the threshold is
+  raised or the window (60s, fixed — see below) rolls over.
+- **Failure mode 2** (too loose / abuse): downstream systems absorb the
+  excess — the LLM provider (see
+  [`llm-rate-limit.md`](llm-rate-limit.md)), the bill-audit pipeline, or
+  Stellar Horizon, which enforces its own **3,600 requests/hour per source
+  IP** limit by default (`PER_HOUR_RATE_LIMIT`), per Stellar's own Horizon
+  API reference. Horizon returns a `429` when this is exceeded, and the
+  limit can be disabled entirely (`PER_HOUR_RATE_LIMIT=0`) by whoever
+  operates that Horizon instance. A pharmacy-order threshold raised
+  without considering this can shift the bottleneck from CareGuard's own
+  429 to a Horizon 429 further downstream instead of actually fixing
+  anything.
+- No audit-log or payment data is lost either way — rate limiting rejects
+  the request before any handler runs, so nothing partially applies.
 
 ---
 
-## Impact
+## Environment Variables (`shared/rate-limit.ts`)
 
-- **Customer Impact**: High to Critical. Legitimate users or background dashboard polling intervals may be locked out of key workflows (agent execution, bill audit reports, pharmacy orders over Stellar x402).
-- **System Impact**: Overly strict limits cause artificial service disruption. Overly permissive limits expose LLM APIs and Stellar payment endpoints to noisy-neighbor resource exhaustion or upstream rate exhaustion (such as Stellar Horizon's GCRA 3,600 req/hr limit).
+Every rate limiter in this file shares one fixed **60-second window**
+(`DEFAULT_WINDOW_MS = 60_000`, `shared/rate-limit.ts:18`) — **there is no
+environment variable to change the window itself**, only the request count
+allowed inside it. "Tuning" in this codebase means raising or lowering
+`max`, never the window length.
 
----
+Malformed values are handled by `parseLimitEnv()`
+(`shared/rate-limit.ts:28`): unset, empty, non-integer, or `<= 0` all fall
+back silently to the documented default — there is **no startup log or
+error** when this happens, so a typo'd variable name or a bad value looks
+identical to "using the default." See "Confirm the value actually took
+effect," below, for how to check.
 
-## Environment Variables & Per-Endpoint Policies
+### Env-configurable, per-route policies (`perRouteLimiters`)
 
-Rate limits are configured in [`shared/rate-limit.ts`](file:///c:/Users/PAB-NETWORK/Documents/Grantfox/careguard/shared/rate-limit.ts). Each endpoint category uses an independent token bucket window of **60 seconds** (`DEFAULT_WINDOW_MS = 60000`) so heavy utilization on one route (e.g., bill audits) cannot starve another (e.g., agent runs).
+These five are the only rate-limit values this codebase lets you tune via
+environment variable. All read once at module load — **changing any of
+them requires a process restart**, there is no hot-reload path (no
+`SIGHUP` handler touches these, unlike the agent wallet key — see
+[`rotate-render-secrets.md`](rotate-render-secrets.md) for that contrast).
 
-The function `parseLimitEnv(raw, fallback)` safely parses values: if an environment variable is unset, empty, non-integer, or `<= 0`, it safely falls back to the documented default to ensure rate limiting is never silently disabled.
-
-### Per-Route Environment Variables (`perRouteLimiters`)
-
-| Environment Variable | Policy Label | Default Value | Route / Target Workflow | Reason for Default Limit |
-|---|---|---|---|---|
-| `RATE_LIMIT_AGENT_RUN` | `agent_run` | `5` req / 60s | `/api/agent/run` | CPU + LLM-bound agent run execution. Strict limit prevents queue starvation and LLM provider rate exhaustion. |
-| `RATE_LIMIT_BILL_AUDIT` | `bill_audit` | `20` req / 60s | `/api/bill-audit` | I/O-light but payload-heavy medical bill auditing. Separate bucket for document parsing. |
-| `RATE_LIMIT_PHARMACY_COMPARE` | `pharmacy_compare` | `30` req / 60s | `/api/pharmacy/compare` | Lightweight price search and comparison across pharmacies. Higher headroom allowed. |
-| `RATE_LIMIT_DRUG_INTERACTIONS` | `drug_interactions` | `30` req / 60s | `/api/drug-interactions` | Lightweight drug-drug and contraindication analysis queries. |
-| `RATE_LIMIT_PHARMACY_ORDER` | `pharmacy_order` | `10` req / 60s | `/api/pharmacy/order` | On-chain Stellar x402 payment and order submission. Tight bound protects upstream Stellar Horizon RPC limits (3,600 req/hr GCRA). |
-
-### Module-Level Rate Limiters (`rateLimiters`)
-
-| Limiter | Policy Label | Default Value | Usage |
+| Env var | Default | Policy label | Route |
 |---|---|---|---|
-| `rateLimiters.agent` | `agent` | `5` req / 60s | Generic agent interaction endpoints |
-| `rateLimiters.x402` | `x402` | `30` req / 60s | Micro-payment verification endpoints |
-| `rateLimiters.default` | `default` | `60` req / 60s | Fallback limiter for unclassified endpoints |
-| `rateLimiters.health` | `health` | Unlimited (pass-through) | Health checks (`/health`, `/ready`) — strictly unlimited to prevent false negative liveness probes |
+| `RATE_LIMIT_AGENT_RUN` | `5` | `agent_run` | `POST /agent/run` |
+| `RATE_LIMIT_BILL_AUDIT` | `20` | `bill_audit` | `POST /bill/audit` |
+| `RATE_LIMIT_PHARMACY_COMPARE` | `30` | `pharmacy_compare` | `GET /pharmacy/compare` |
+| `RATE_LIMIT_DRUG_INTERACTIONS` | `30` | `drug_interactions` | `GET /drug/interactions` |
+| `RATE_LIMIT_PHARMACY_ORDER` | `10` | `pharmacy_order` | `POST /pharmacy/order` |
+
+(Defaults are `RATE_LIMIT_DEFAULTS` in `shared/rate-limit.ts:75`; routes
+confirmed against the mount points in `server.ts`.)
+
+### Hardcoded policies — not env-configurable
+
+These exist in the same file and share the same `ratelimit_hits_total`
+metric, but **have no environment variable today**. This matters directly
+for "without locking out the dashboard," below.
+
+| Policy label | Max | Mounted on |
+|---|---|---|
+| `agent` | `5` | **All** of `/agent/*` (`app.use("/agent", rateLimiters.agent)`) |
+| `default` | `60` | Every route, as a global fallback (`app.use(rateLimiters.default)`) |
+| `x402` | `30` | Defined but not currently mounted on any route — dead code as of this writing |
+| `health` | unlimited | `/health` — a true pass-through, never counted in `ratelimit_hits_total` |
+
+**The interaction that actually locks out the dashboard**: the dashboard's
+read-heavy polling — `use-agent-state.ts` polls `/agent/spending` every 3s
+(SSE-fallback), `/agent` info every 10s, and the approvals tab polls every
+5s — all land under `/agent/*`, so they all share the single, **hardcoded**
+`agent` policy (max `5` per 60s), on top of whatever route-specific policy
+also applies. Raising `RATE_LIMIT_AGENT_RUN` only widens the bucket for
+`POST /agent/run` specifically; it does **nothing** for the shared `agent`
+bucket that the dashboard's GET polling actually depends on, because that
+bucket has no env var. If the dashboard itself is what's getting
+locked out, confirm which policy is actually firing (see Diagnosis) before
+assuming a `RATE_LIMIT_*` env var is the fix — it may not be tunable today
+without a code change to `shared/rate-limit.ts`.
+
+Rate limiters use `express-rate-limit`'s default in-memory store — counts
+are per-process. On a single instance (CareGuard's current Render `plan:
+free` setup, per `render.yaml`) that's the whole picture; if this ever runs
+as multiple instances behind a load balancer, the effective limit becomes
+`max × instance count`, since counts are not shared (e.g. via Redis)
+across processes.
 
 ---
 
 ## Diagnosis
 
-Use Prometheus / Grafana or curl commands to analyze rate-limiting behavior.
+### 1. Read the metrics
 
-### 1. Prometheus Metrics
+Two Prometheus metrics come out of `shared/rate-limit.ts`, neither of
+which currently has a Grafana panel — query them directly:
 
-CareGuard exports two primary metrics in `shared/rate-limit.ts`:
+```bash
+curl -s localhost:3000/metrics | grep -E "ratelimit_hits_total|route_concurrent_requests"
+```
 
-1. **`ratelimit_hits_total{policy="<policy_name>"}`** (*Counter*):
-   - Total count of HTTP 429 responses generated per policy.
-   - **PromQL (Hit Rate per Policy)**:
-     ```promql
-     sum(rate(ratelimit_hits_total[5m])) by (policy)
-     ```
-2. **`route_concurrent_requests{route="<route_name>"}`** (*Gauge*):
-   - In-flight requests currently being processed per route.
-   - **PromQL (Concurrent In-Flight Requests)**:
-     ```promql
-     sum(route_concurrent_requests) by (route)
-     ```
+- **`ratelimit_hits_total{policy="<name>"}`** (Counter) — increments once
+  per rejected (`429`) request, labelled by policy name from the tables
+  above. This is the primary signal: `rate(ratelimit_hits_total[5m]) by
+  (policy)` tells you which policy is actually being hit and how fast.
+- **`route_concurrent_requests{route="<name>"}`** (Gauge) — in-flight
+  request count per route (labels: `agent_run`, `bill_audit`,
+  `pharmacy_compare`, `drug_interactions`, `pharmacy_order`, from the
+  `concurrentRequestsMiddleware(...)` calls in `server.ts`). Useful for
+  telling a genuine concurrency spike apart from a client just retrying
+  fast after each `429`.
 
-### 2. Distinguishing Throttling vs. Abuse
+### 2. Throttling vs. abuse — what the metric can and can't tell you
 
-- **Legitimate Throttling (Under-provisioned Limit)**:
-  - `ratelimit_hits_total` increases during known peak hours or synchronized dashboard polling cycles (e.g. every 10–15s across multiple active dashboard users).
-  - Low `route_concurrent_requests` but periodic bursts exceeding the per-minute window.
-  - HTTP `429` responses contain standard headers (`RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset`, `Retry-After`).
-- **Abuse / Noisy-Neighbor Attack**:
-  - Sustained high rate of `ratelimit_hits_total` from a single policy label or IP.
-  - `route_concurrent_requests` remains elevated near maximum concurrency limits.
-  - Non-dashboard user agents or anomalous payload sizes.
+**Be precise about the metric's limits**: `ratelimit_hits_total` has one
+label, `policy`. It does **not** carry client IP, so you cannot answer "is
+this one IP or many?" from Prometheus alone — `shared/request-logger.ts`
+also does not log client IP on the `http` line it writes per request. If
+you need to attribute abuse to a specific source, that has to come from
+infrastructure-level logs (reverse proxy / CDN / hosting platform access
+logs), not from anything CareGuard exports today.
 
----
+What you *can* determine from CareGuard's own signals:
 
-## Mitigation
-
-If legitimate dashboard traffic or care operations are being locked out, apply an immediate temporary increase to the affected environment variable(s).
-
-### Emergency Relief Steps
-
-1. **Identify the Throttled Policy**:
-   Check Grafana or query logs for HTTP 429 responses to see which policy (e.g. `agent_run` or `bill_audit`) is triggering.
-2. **Raise the Environment Variable**:
-   Set the env var in your hosting environment (e.g. Render dashboard or `.env` / container environment):
-   ```bash
-   RATE_LIMIT_AGENT_RUN=15
-   RATE_LIMIT_BILL_AUDIT=40
-   ```
-3. **Restart the Service**:
-   Apply the environment configuration change and restart the container service.
-
----
-
-## Safe Rollout Procedure
-
-When adjusting thresholds permanently, follow this step-by-step procedure to avoid locking out the dashboard or exceeding upstream quotas.
-
-### Step 1: Measure Baseline Cadence
-- Calculate the Next.js dashboard polling cadence. For example, if the dashboard polls `/api/pharmacy/compare` every 10 seconds per active tab, 1 active user generates 6 requests/minute.
-- Determine safety headroom factor ($1.5\times$ to $2.0\times$ peak traffic):
-  $$\text{Target Threshold} = \max(\text{Peak Requests per 60s} \times 1.5, \text{DEFAULT})$$
-
-### Step 2: Incremental Increase (+25% to +50% steps)
-Do not set arbitrary large numbers (e.g., jump from 5 to 500). Increase in controlled increments:
-- Example for `RATE_LIMIT_AGENT_RUN`: `5` $\rightarrow$ `10` $\rightarrow$ `15`.
-- Example for `RATE_LIMIT_BILL_AUDIT`: `20` $\rightarrow$ `30` $\rightarrow$ `40`.
-
-### Step 3: Deploy & Observe Dashboard Cadence
-1. Deploy the environment update.
-2. Open the CareGuard dashboard and verify:
-   - Dashboard connection status chip shows **"Connected"**.
-   - No HTTP 429 errors appear in browser developer console network tab.
-3. Monitor `ratelimit_hits_total` for 15–30 minutes in Grafana to ensure hit rates return to zero for legitimate users.
+- **Consistent with legitimate throttling**: `ratelimit_hits_total`
+  increases in a pattern that lines up with a known client's fixed poll
+  interval (3s / 5s / 10s for the dashboard, above) or with an expected
+  traffic pattern (e.g. many caregivers running agent tasks around the
+  same time of day). `route_concurrent_requests` stays low — the requests
+  aren't overlapping, they're just too frequent for the window.
+- **Consistent with abuse / a misbehaving client**: sustained hits on a
+  single policy with no let-up (a legitimate client backs off or gives up;
+  a scraper or retry-loop doesn't), especially concentrated on
+  `pharmacy_order` or `bill_audit` — the two routes that move money or
+  parse large payloads. Check `docker compose logs` / your log aggregator
+  for `"http"` lines with `status: 429` on that `path` — the volume and
+  timing there is your best proxy for "one aggressive client" vs. "diffuse
+  legitimate load," even without an IP field.
+- Every `429` response — legitimate or not — includes standard headers
+  (`standardHeaders: true` in `createRateLimiter`, `shared/rate-limit.ts:49`):
+  `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset`, plus a
+  manually-set `Retry-After` (seconds). These are visible in a browser's
+  network tab and are the fastest way to confirm a specific caregiver's
+  dashboard is actually hitting a real limit, and which one.
 
 ---
 
-## Rollback Procedure
+## Mitigation (immediate relief)
 
-If raising thresholds causes downstream resource exhaustion (e.g., LLM API rate limits or Stellar Horizon node RPC rate limits):
+If legitimate traffic is currently locked out and you need relief before
+following the full rollout procedure below:
 
-1. **Revert Environment Variables**:
-   Reset the environment variable to its previous known-good value, or unset it to automatically revert to default:
-   ```bash
-   unset RATE_LIMIT_AGENT_RUN
-   # Or explicitly set back to default
-   RATE_LIMIT_AGENT_RUN=5
-   ```
-2. **Redeploy / Restart Service**:
-   Restart the container process so `parseLimitEnv` re-evaluates the environment.
-3. **Verify Recovery**:
-   Check that upstream errors (e.g. 503s or LLM/Stellar 429s) drop and system stability is restored.
+1. Confirm which **policy label** is actually firing (Diagnosis, above) —
+   don't guess. Raising the wrong env var (e.g. `RATE_LIMIT_AGENT_RUN` when
+   the shared, non-configurable `agent` policy is what's firing) will look
+   like it did nothing.
+2. If the firing policy is one of the five env-configurable ones, set the
+   corresponding `RATE_LIMIT_*` variable to a higher value (see "Safe
+   rollout" for how much) and restart the process — see "Apply the
+   change," below.
+3. If the firing policy is `agent` or `default` (not env-configurable
+   today), the only in-app relief is a full process restart: the
+   in-memory store is cleared on restart, which resets every counter for
+   every client immediately. This is a blunt instrument — it also resets
+   the counter for anyone currently abusing the same policy — so use it
+   only as a stopgap while a real fix (code change to make that policy
+   configurable, or infra-level IP blocking for confirmed abuse) is
+   prepared.
 
 ---
 
-## Post-Mortem Template
+## Safe rollout procedure
 
-If a rate-limit lockout or threshold incident occurs, complete the following incident summary:
+Follow this when permanently changing one of the five `RATE_LIMIT_*`
+values.
 
-- **Date / Duration**: 
-- **Affected Policy**: (e.g., `agent_run`, `bill_audit`, `pharmacy_order`)
-- **Root Cause**: (e.g., dashboard poll frequency increased, bursty user traffic, under-tuned threshold)
-- **Detection Lag**: Time from first HTTP 429 burst to operator response
-- **Mitigation Taken**: (e.g., `RATE_LIMIT_AGENT_RUN` raised from 5 to 15)
-- **Remediation**: Permanent threshold tune, client polling back-off adjustment, or rate limit bucket tuning
-- **Action Items**:
-  - [ ] Adjust default environment configuration if required
-  - [ ] Update Grafana alerting threshold for `ratelimit_hits_total`
+### Step 1 — Establish a baseline
+
+Query `ratelimit_hits_total{policy="<name>"}` over a representative window
+(a day or more, if you have that much retention) before changing anything.
+If it's already at or near zero, you may not need a change at all — check
+whether the report of a lockout maps to a *different*, non-configurable
+policy instead (see "The interaction that actually locks out the
+dashboard," above) before touching an env var.
+
+### Step 2 — Raise gradually, not to an arbitrary large number
+
+Move in roughly 50–100% increments and re-observe, rather than jumping
+straight to a number that seems safely large:
+
+```
+RATE_LIMIT_AGENT_RUN:        5  → 8  → 12
+RATE_LIMIT_BILL_AUDIT:      20  → 30 → 45
+RATE_LIMIT_PHARMACY_COMPARE: 30  → 45 → 65
+RATE_LIMIT_DRUG_INTERACTIONS:30  → 45 → 65
+RATE_LIMIT_PHARMACY_ORDER:  10  → 15 → 22
+```
+
+Keep `pharmacy_order` and `agent_run` the most conservative of the five —
+they gate on-chain payment submission and LLM-bound work respectively, and
+the code comments in `shared/rate-limit.ts` treat both as deliberately
+tight for that reason. For `pharmacy_order` specifically, also keep in mind
+that every order fans out into multiple Horizon calls (build, submit,
+poll); Horizon's own default per-IP limit (3,600 req/hour — see Impact,
+above) is a real, separate ceiling upstream of CareGuard's own limit, so
+raising `RATE_LIMIT_PHARMACY_ORDER` far past what's needed doesn't just
+relax CareGuard's protection, it can start manufacturing Horizon 429s on
+CareGuard's own outbound calls (see
+[`horizon-down.md`](horizon-down.md) for how those surface).
+
+### Step 3 — Apply the change
+
+**Local / Docker Compose**: edit `.env`, then
+
+```bash
+docker compose up -d <service>
+```
+
+**not** `docker compose restart` — `restart` reuses the running
+container's already-loaded environment and will not pick up the new value
+(same caveat documented in
+[`rotate-render-secrets.md`](rotate-render-secrets.md) for other env
+vars).
+
+**Render** (`render.yaml`): the `RATE_LIMIT_*` variables are not currently
+declared in `render.yaml`, so add or edit them under the service's
+Environment Variables in the Render Dashboard, then trigger **Manual
+Deploy → Restart Service** — Render does not auto-restart a running
+service on an environment-variable change alone.
+
+### Step 4 — Confirm the value actually took effect
+
+Because a malformed value silently falls back to the default with no log
+line (see "Environment Variables," above), don't assume the deploy worked
+— check it:
+
+```bash
+curl -s -o /dev/null -D - http://localhost:3000/agent/run -X POST | grep -i ratelimit-limit
+```
+
+The `RateLimit-Limit` response header (present on every response, not just
+`429`s, since `standardHeaders: true`) reflects the value the process is
+actually running with.
+
+### Step 5 — Watch for a full window with no unexpected regression
+
+Watch `ratelimit_hits_total{policy="<name>"}` for at least a couple of
+60-second windows of normal traffic:
+
+- It should drop to (near) zero for the policy you just raised, for
+  legitimate traffic.
+- Open the dashboard and confirm the connection status chip stays
+  "Connected" through at least one full cycle of its poll intervals (3s,
+  5s, and 10s — see "The interaction that actually locks out the
+  dashboard," above) with no `429`s in the browser network tab.
+- If you raised `pharmacy_order` or `agent_run`, also check for any new
+  `429`s from Horizon or the LLM provider respectively (`agent_llm_error_total`,
+  per [`llm-rate-limit.md`](llm-rate-limit.md)) — those indicate you've
+  shifted the bottleneck downstream rather than resolved it, and the value
+  should come back down.
+
+---
+
+## Rollback
+
+1. Revert the `RATE_LIMIT_*` variable to its previous known-good value —
+   or delete it entirely to fall back to the documented default in the
+   table above (`parseLimitEnv` treats "unset" and "the default" the
+   same).
+2. Re-apply with the same restart procedure as Step 3 (`docker compose up
+   -d <service>`, or Render Manual Deploy → Restart Service) — the change
+   will not take effect without a restart.
+3. Re-run Step 4 to confirm the reverted value is actually in effect, then
+   watch `ratelimit_hits_total` return to its pre-incident baseline.
+
+---
+
+## Post-mortem template
+
+```
+Date / duration:
+Affected policy (agent_run / bill_audit / pharmacy_compare / drug_interactions / pharmacy_order / agent / default):
+Root cause: [ threshold too tight for legitimate traffic | abuse / misbehaving client | dashboard polling vs. non-configurable "agent" policy ]
+Detection lag: (time from first ratelimit_hits_total increase to incident declared)
+Mitigation taken:
+Remediation (env var + old value → new value, or code change if a non-configurable policy was involved):
+Action items:
+```
+
+---
+
+## Related
+
+- `shared/rate-limit.ts` — source of every env var, default, and policy
+  label referenced in this runbook
+- [`docs/adr/unified-vs-split-server.md`](../adr/unified-vs-split-server.md) —
+  rationale for per-route token buckets and the `ratelimit_hits_total` /
+  `route_concurrent_requests` metrics
+- [`llm-rate-limit.md`](llm-rate-limit.md) — the LLM provider's own,
+  unrelated 429 (don't confuse the two when `agent_run` traffic is
+  involved)
+- [`horizon-down.md`](horizon-down.md) — Stellar Horizon outage/rate-limit
+  symptoms, relevant if raising `RATE_LIMIT_PHARMACY_ORDER` shifts load
+  onto Horizon
+- [`rotate-render-secrets.md`](rotate-render-secrets.md) — the
+  restart-required / `docker compose up -d` vs. `restart` precedent this
+  runbook builds on
+- [`docs/troubleshooting.md`](../troubleshooting.md) — existing one-line
+  pointer that includes `ratelimit_hits_total` in its `/metrics` triage
+  command
