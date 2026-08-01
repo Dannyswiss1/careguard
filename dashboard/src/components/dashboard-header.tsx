@@ -26,6 +26,7 @@ export interface DashboardHeaderProps {
   agentInfoError?: string | null;
   spendingError?: string | null;
   transactionsError?: string | null;
+  recipientsError?: string | null;
   locale?: Locale;
 }
 
@@ -43,6 +44,7 @@ export function DashboardHeader({
   agentInfoError,
   spendingError,
   transactionsError,
+  recipientsError,
   locale = "en",
 }: DashboardHeaderProps) {
   const [tooltipVisible, setTooltipVisible] = useState(false);
@@ -52,6 +54,7 @@ export function DashboardHeader({
     ...(agentInfoError ? [{ source: 'Agent', error: agentInfoError }] : []),
     ...(spendingError ? [{ source: 'Spending', error: spendingError }] : []),
     ...(transactionsError ? [{ source: 'Transactions', error: transactionsError }] : []),
+    ...(recipientsError ? [{ source: 'Recipients', error: recipientsError }] : []),
   ];
   const anySourceDown = sourceErrors.length > 0;
   return (
