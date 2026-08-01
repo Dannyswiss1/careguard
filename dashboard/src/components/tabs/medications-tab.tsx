@@ -109,12 +109,13 @@ export function MedicationsTab({ agentResult, recipient, locale = "en" }: Medica
           <h2 className="text-sm font-semibold text-slate-700 mb-4">
             {t.drugInteractions}
           </h2>
-          {interactionCalls.map((t, i) => (
-            <div key={i} className="space-y-2">
+          {/* Stable key: tool-call id (or input composite) survives list reordering. */}
+          {interactionCalls.map((t) => (
+            <div key={t.id ?? `interaction-${JSON.stringify(t.input)}`} className="space-y-2">
               <p className="text-sm text-slate-600">{t.result.summary}</p>
-              {t.result.interactions?.map((ix: any, j: number) => (
+              {t.result.interactions?.map((ix: any) => (
                 <div
-                  key={j}
+                  key={`${ix.drug1}-${ix.drug2}`}
                   className={`p-3 rounded-lg text-sm ${ix.severity === "severe"
                     ? "bg-red-50 border border-red-200"
                     : ix.severity === "moderate"
