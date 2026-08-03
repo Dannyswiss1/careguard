@@ -35,7 +35,7 @@ export default function Dashboard() {
   }
 
   const { recipient, caregiver, updateProfile } = useProfile();
-  const { recipients, selectedId, selectRecipient } = useRecipients((profile) => {
+  const { recipients, selectedId, selectRecipient, error: recipientsError } = useRecipients((profile) => {
     updateProfile({ recipient: profile });
   });
   const pathname = usePathname();
@@ -105,6 +105,7 @@ export default function Dashboard() {
         agentInfoError={state.agentInfoError}
         spendingError={state.spendingError}
         transactionsError={state.transactionsError}
+        recipientsError={recipientsError}
       />
       <div className="max-w-7xl mx-auto px-4 py-6">
         <DashboardTabsNav activeTab={activeTab} pathname={pathname} locale={locale} />

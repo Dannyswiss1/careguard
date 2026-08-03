@@ -42,7 +42,7 @@ import type {
   PharmacyRecordInput,
 } from "./logic.ts";
 
-const PORT = parseInt(process.env.PHARMACY_API_PORT || "3001");
+const PORT = parseInt(process.env.PHARMACY_API_PORT || "3001", 10);
 const PAY_TO = process.env.PHARMACY_1_PUBLIC_KEY;
 
 if (!PAY_TO) throw new Error("PHARMACY_1_PUBLIC_KEY required in .env");
