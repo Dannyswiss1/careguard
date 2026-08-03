@@ -286,6 +286,7 @@ export async function submitTransactionWithRetry(
             break;
           }
           stellarTxBadSeqRetriesTotal.inc();
+          paybillSeqRetryTotal++;
           logger.warn(
             { seq: tx?.sequence, attempt: seqRetry + 1, reason: "tx_bad_seq" },
             "[Stellar] tx_bad_seq — reloaded account, retrying",
@@ -360,8 +361,12 @@ export async function submitTransactionWithFeeBump(
     for (const op of operations) {
       builder.addOperation(op);
     }
-    const built = builder.setTimeout(30).build();
+    const built = builder.setTimeout(STELLAR_TIMEBOUNDS_SECONDS).build();
     built.sign(signer);
+    const sigHint = built.signatures[0]?.hint();
+    if (!sigHint || !sigHint.equals(signer.signatureHint())) {
+      throw new Error(`Signer mismatch: expected ${signer.publicKey()} — refusing to submit`);
+    }
     return built;
   };
 
@@ -478,55 +483,78 @@ process.on('SIGHUP', () => {
 });
 
 // --- MPP Client: Auto-handles 402 for medication order payments ---
-// Use factory function to create client instance (supports DI for testing)
-let mppClient: MppClientInstance = isMockNetwork()
-  ? {
-      fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
-        const receipt = createMockReceipt('mpp', {
-          url: String(input),
-          body: init?.body ? String(init.body) : '',
-        });
-        return new Response(
-          JSON.stringify({
-            success: true,
-            order: { id: receipt.receiptId },
-            receipt,
-          }),
-          {
-            status: 200,
-            headers: {
-              'Content-Type': 'application/json',
-              'Payment-Receipt': Buffer.from(
-                JSON.stringify({ reference: receipt.stellarTxHash }),
-              ).toString('base64'),
-            },
+// Lazy-constructed on first use and cached for 60s (issue #196) so
+// STELLAR_NETWORK can be switched at runtime via SIGHUP without a full
+// process restart. See docs/runbooks/switch-network.md.
+function createMockMppClient(): MppClientInstance {
+  return {
+    fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+      const receipt = createMockReceipt('mpp', {
+        url: String(input),
+        body: init?.body ? String(init.body) : '',
+      });
+      return new Response(
+        JSON.stringify({
+          success: true,
+          order: { id: receipt.receiptId },
+          receipt,
+        }),
+        {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json',
+            'Payment-Receipt': Buffer.from(
+              JSON.stringify({ reference: receipt.stellarTxHash }),
+            ).toString('base64'),
           },
-        );
-      },
-      get lastTxHash() {
-        return undefined;
-      },
-    }
-  : createMppClient({
-      keypair: agentKeypair,
-      mode: 'pull',
-    });
+        },
+      );
+    },
+    get lastTxHash() {
+      return undefined;
+    },
+  };
+}
+
+export const MPP_CLIENT_TTL_MS = 60_000;
+let _mppClient: MppClientInstance | null = null;
+let _mppClientCreatedAt = 0;
 
 /**
  * Set a custom MPP client instance (for testing/DI).
  * @param client - MPP client instance to use
  */
 export function setMppClient(client: MppClientInstance) {
-  mppClient = client;
+  _mppClient = client;
+  _mppClientCreatedAt = Date.now();
+}
+
+/** Force the next getMppClient() call to construct a fresh client. */
+export function invalidateMppClientCache() {
+  _mppClient = null;
+  _mppClientCreatedAt = 0;
 }
 
 /**
- * Get the current MPP client instance.
+ * Get the current MPP client instance, constructing (or reconstructing) it
+ * if there is none cached or the 60s TTL has elapsed.
  * @returns Current MPP client
  */
 export function getMppClient(): MppClientInstance {
-  return mppClient;
+  const now = Date.now();
+  if (!_mppClient || now - _mppClientCreatedAt > MPP_CLIENT_TTL_MS) {
+    _mppClient = isMockNetwork()
+      ? createMockMppClient()
+      : createMppClient({ keypair: agentKeypair, mode: 'pull' });
+    _mppClientCreatedAt = now;
+  }
+  return _mppClient;
 }
+
+process.on('SIGHUP', () => {
+  invalidateMppClientCache();
+  logger.info('[mpp] SIGHUP received — client cache invalidated, will reload on next call');
+});
 
 // --- Per-recipient data directories (Issue #261) ---
 const DATA_DIR = process.env.DATA_DIR || fileURLToPath(new URL('../data', import.meta.url));
@@ -680,7 +708,7 @@ export const SpendingPolicySchema = z.object({
   { message: 'medicationMonthlyBudget + billMonthlyBudget cannot exceed monthlyLimit', path: ['medicationMonthlyBudget'] },
 );
 
-type SpendingPolicyInput = z.infer<typeof SpendingPolicySchema>;
+type SpendingPolicyInput = z.input<typeof SpendingPolicySchema>;
 
 const SPENDING_CACHE_TTL_MS = 5000;
 /** Compact the JSONL log into a snapshot every this many transactions (Issue #205). */
@@ -1743,7 +1771,7 @@ async function executeMedicationPayment(
   }
 
   try {
-    const response = await mppClient.fetch(
+    const response = await getMppClient().fetch(
       `${PHARMACY_PAYMENT_API}/pharmacy/order`,
       {
         method: 'POST',
@@ -2166,26 +2194,6 @@ export async function payForMedication(
   }
 
   return { success: true, transaction: tx };
-}
-
-// Helper: build, sign, and submit a single USDC payment so payBill can retry on tx_bad_seq
-async function buildAndSubmitUsdcPayment(account: any, recipientKey: string, amount: number): Promise<string> {
-  const usdcAsset = new Asset("USDC", USDC_ISSUER);
-  const stellarTx = new TransactionBuilder(account, {
-    fee: "100",
-    networkPassphrase: Networks.TESTNET,
-  })
-    .addOperation(Operation.payment({ destination: recipientKey, asset: usdcAsset, amount: amount.toFixed(7) }))
-    .setTimeout(30)
-    .build();
-  stellarTx.sign(agentKeypair);
-  const sigHint = stellarTx.signatures[0]?.hint();
-  if (!sigHint || !sigHint.equals(agentKeypair.signatureHint())) {
-    throw new Error(`Signer mismatch: expected ${agentKeypair.publicKey()} — refusing to submit`);
-  }
-  console.log(`  [Stellar] Signer verified: ${agentKeypair.publicKey().slice(0, 8)}...`);
-  const result = await horizonServer.submitTransaction(stellarTx);
-  return (result as any).hash;
 }
 
 // --- Tool: Pay a medical bill via real Stellar USDC transfer ---
