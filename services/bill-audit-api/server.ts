@@ -17,6 +17,8 @@ import express from "express";
 import { readFileSync } from "fs";
 import {
   BillAuditValidationError,
+  FAIR_MARKET_RATES,
+  auditBill as sharedAuditBill,
   type LineItem,
   validateBillAuditRequest,
 } from "../../shared/bill-audit.ts";
@@ -29,7 +31,7 @@ import { requestLoggerMiddleware } from "../../shared/request-logger.ts";
 import { sanitizeUserString } from "../../shared/sanitize.ts";
 import { billAuditOversizedRejectionsTotal } from "../../shared/metrics.ts";
 
-const PORT = parseInt(process.env.BILL_AUDIT_API_PORT || "3002");
+const PORT = parseInt(process.env.BILL_AUDIT_API_PORT || "3002", 10);
 const PAY_TO = process.env.BILL_PROVIDER_PUBLIC_KEY;
 
 if (!PAY_TO) throw new Error("BILL_PROVIDER_PUBLIC_KEY required in .env");
@@ -127,28 +129,11 @@ process.on('SIGHUP', () => {
   loadAuditThresholds();
 });
 
-// Fair market rate database — based on CMS Medicare Physician Fee Schedule 2026
-// Rates are valid through end of 2026. After this date, rates should be refreshed.
+// Rates valid dates
 const RATES_AS_OF = '2026-01-01';
 const RATES_VALID_UNTIL = '2026-12-31';
 
-const FAIR_MARKET_RATES: Record<string, { description: string; fairRate: number }> = {
-  "99213": { description: "Office visit, established patient, moderate", fairRate: 130 },
-  "99214": { description: "Office visit, established patient, high", fairRate: 195 },
-  "99215": { description: "Office visit, established patient, complex", fairRate: 265 },
-  "70553": { description: "MRI brain with and without contrast", fairRate: 450 },
-  "71046": { description: "Chest X-ray, 2 views", fairRate: 45 },
-  "80053": { description: "Comprehensive metabolic panel", fairRate: 25 },
-  "85025": { description: "Complete blood count (CBC)", fairRate: 15 },
-  "36415": { description: "Venipuncture (blood draw)", fairRate: 10 },
-  "93000": { description: "Electrocardiogram (ECG)", fairRate: 35 },
-  "99232": { description: "Hospital care, moderate complexity", fairRate: 145 },
-  "99233": { description: "Hospital care, high complexity", fairRate: 210 },
-  "99238": { description: "Hospital discharge day management", fairRate: 160 },
-  "96372": { description: "Injection, subcutaneous or intramuscular", fairRate: 25 },
-  "J0170": { description: "Adrenaline/epinephrine injection", fairRate: 15 },
-  "97110": { description: "Physical therapy, therapeutic exercises", fairRate: 55 },
-};
+export { FAIR_MARKET_RATES };
 
 // Check if rates data is stale
 function checkRatesFreshness() {
@@ -159,57 +144,27 @@ function checkRatesFreshness() {
   }
 }
 
-// Check freshness at boot
+// Check freshness at boot, then daily — a long-running process that started
+// before RATES_VALID_UNTIL would otherwise never notice the rates going stale.
+const RATES_FRESHNESS_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 checkRatesFreshness();
+const ratesFreshnessInterval = setInterval(checkRatesFreshness, RATES_FRESHNESS_CHECK_INTERVAL_MS);
+ratesFreshnessInterval.unref();
 
 interface BillItem { description: string; cptCode: string; quantity: number; chargedAmount: number; }
 
 export function auditBill(lineItems: BillItem[]) {
-  const results: any[] = [];
-  let totalCharged = 0, totalCorrect = 0, errorCount = 0;
-  const seenCodes: Record<string, number> = {};
-
-  for (const item of lineItems) {
-    totalCharged += item.chargedAmount;
-    const fairRate = FAIR_MARKET_RATES[item.cptCode];
-    const fairAmount = fairRate !== undefined ? fairRate.fairRate * item.quantity : null;
-    const threshold = getAuditThreshold(item.cptCode);
-
-    seenCodes[item.cptCode] = (seenCodes[item.cptCode] || 0) + 1;
-    if (seenCodes[item.cptCode] > 1 && !duplicateAllowlist.has(item.cptCode)) {
-      errorCount++;
-      results.push({ description: item.description, cptCode: item.cptCode, quantity: item.quantity, chargedAmount: item.chargedAmount, fairMarketRate: fairAmount, status: "duplicate", errorDescription: `Duplicate charge for CPT ${item.cptCode}. Appears ${seenCodes[item.cptCode]} times.`, suggestedAmount: 0 });
-      continue;
-    }
-
-    if (fairAmount !== null && item.chargedAmount > fairAmount * threshold) {
-      errorCount++;
-      const suggestedAmount = +(fairAmount * BILL_AUDIT_SUGGESTED_MULTIPLIER).toFixed(2);
-      totalCorrect += suggestedAmount;
-      results.push({ description: item.description, cptCode: item.cptCode, quantity: item.quantity, chargedAmount: item.chargedAmount, fairMarketRate: fairAmount, status: item.chargedAmount > fairAmount * BILL_AUDIT_UPCODED_MULTIPLIER ? "upcoded" : "overcharged", errorDescription: `Charged $${item.chargedAmount} — CMS fair market rate is $${fairAmount}. Overcharged by $${(item.chargedAmount - fairAmount).toFixed(2)}.`, suggestedAmount });
-      continue;
-    }
-
-    const suggested = fairAmount !== null ? Math.min(item.chargedAmount, +(fairAmount * BILL_AUDIT_SUGGESTED_MULTIPLIER).toFixed(2)) : item.chargedAmount;
-    totalCorrect += suggested;
-    results.push({ description: item.description, cptCode: item.cptCode, quantity: item.quantity, chargedAmount: item.chargedAmount, fairMarketRate: fairAmount, status: "valid", errorDescription: null, suggestedAmount: suggested });
-  }
-
-  const totalOvercharge = +(totalCharged - totalCorrect).toFixed(2);
-
-  const savingsPercent = totalCharged > 0 ? +((totalOvercharge / totalCharged) * 100).toFixed(1) : 0;
-  const now = new Date();
-  const validUntil = new Date(RATES_VALID_UNTIL);
-  const isStale = now > validUntil;
-
-  return {
-    auditTimestamp: new Date().toISOString(),
-    protocol: { name: "x402", network: NETWORK, price: "$0.01", payTo: PAY_TO },
-    totalCharged: +totalCharged.toFixed(2), totalCorrect: +totalCorrect.toFixed(2),
-    totalOvercharge, savingsPercent, errorCount, lineItems: results,
-    dataFreshness: { ratesAsOf: RATES_AS_OF, validUntil: RATES_VALID_UNTIL, isStale },
-    recommendation: errorCount === 0 ? "No errors detected. This bill appears correct." : `Found ${errorCount} errors totaling $${totalOvercharge} in overcharges (${savingsPercent}% of total bill). Strongly recommend filing a formal dispute.`,
-  };
+  return sharedAuditBill(lineItems, {
+    network: NETWORK,
+    payTo: PAY_TO,
+    duplicateAllowlist,
+    getAuditThreshold,
+    overchargeMultiplier: BILL_AUDIT_OVERCHARGE_MULTIPLIER,
+    suggestedMultiplier: BILL_AUDIT_SUGGESTED_MULTIPLIER,
+    upcodedMultiplier: BILL_AUDIT_UPCODED_MULTIPLIER,
+    ratesAsOf: RATES_AS_OF,
+    ratesValidUntil: RATES_VALID_UNTIL,
+  });
 }
 
 export const app = express();

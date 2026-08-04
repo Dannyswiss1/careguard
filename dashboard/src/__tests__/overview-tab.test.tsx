@@ -1,11 +1,11 @@
 /// <reference types="@testing-library/jest-dom" />
 import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
-import { OverviewTab } from "./overview-tab";
+import { OverviewTab } from "../components/tabs/overview-tab";
 
 // Mock AdherencePrompt since it does fetching
-vi.mock("./overview-tab", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./overview-tab")>();
+vi.mock("../components/tabs/overview-tab", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../components/tabs/overview-tab")>();
   return {
     ...actual,
     AdherencePrompt: () => <div data-testid="adherence-prompt" />,
@@ -122,5 +122,18 @@ describe("OverviewTab Component", () => {
       expect.stringContaining("Audit Rosa's hospital bill"),
       "bill"
     );
+  });
+
+  it("renders Spanish translations when locale is set to 'es' (Issue #1126)", () => {
+    render(<OverviewTab {...mockProps} locale="es" />);
+    expect(screen.getByText("Gasto Mensual")).toBeInTheDocument();
+    expect(screen.getByText("Ahorros Encontrados")).toBeInTheDocument();
+    expect(screen.getByText("Errores de Facturación")).toBeInTheDocument();
+    expect(screen.getByText("Costos de API del Agente")).toBeInTheDocument();
+    expect(screen.getByText("Estado del Presupuesto")).toBeInTheDocument();
+    expect(screen.getByText("Acciones del Agente")).toBeInTheDocument();
+    expect(screen.getByText("Comparar Precios de Medicamentos")).toBeInTheDocument();
+    expect(screen.getByText("Auditar Factura Hospitalaria")).toBeInTheDocument();
+    expect(screen.getByText("Intentar Pago Excedente")).toBeInTheDocument();
   });
 });

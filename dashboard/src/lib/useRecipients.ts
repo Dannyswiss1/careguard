@@ -16,6 +16,12 @@ export interface RecipientListItem {
 export function useRecipients(onSelect: (profile: RecipientProfile) => void) {
   const [recipients, setRecipients] = useState<RecipientListItem[]>([]);
   const [selectedId, setSelectedId] = useState<string>('rosa_garcia');
+  // Per-source health (Issue #1112, following the #213 pattern in
+  // use-agent-state.ts): null = healthy, string = error message. Previously a
+  // failed /recipients request was swallowed and treated identically to "no
+  // recipients", leaving a caregiver with multiple recipients no indication
+  // that the switcher data failed to load.
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!AGENT_URL) return;
@@ -24,11 +30,17 @@ export function useRecipients(onSelect: (profile: RecipientProfile) => void) {
       : undefined;
     const headers: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {};
     fetch(`${AGENT_URL}/recipients`, { headers })
-      .then((res) => res.ok ? res.json() : [])
+      .then((res) => {
+        if (!res.ok) throw new Error(`Recipients returned ${res.status}`);
+        return res.json();
+      })
       .then((data: RecipientListItem[]) => {
         if (Array.isArray(data) && data.length > 0) setRecipients(data);
+        setError(null);
       })
-      .catch(() => {});
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : 'Recipients unavailable');
+      });
   }, []);
 
   const selectRecipient = useCallback(
@@ -47,5 +59,5 @@ export function useRecipients(onSelect: (profile: RecipientProfile) => void) {
     [recipients, onSelect],
   );
 
-  return { recipients, selectedId, selectRecipient };
+  return { recipients, selectedId, selectRecipient, error };
 }

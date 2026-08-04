@@ -96,16 +96,16 @@ export const DrugInteractionsQuerySchema = z
 
 export type DrugInteractionsQuery = z.infer<typeof DrugInteractionsQuerySchema>;
 
-function sortPairsBySeverity(pairs: any[]) {
-  const severityOrder: Record<string, number> = {
-    severe: 0,
-    moderate: 1,
-    mild: 2,
-  };
+const SEVERITY_ORDER: Record<string, number> = {
+  severe: 0,
+  moderate: 1,
+  mild: 2,
+};
 
+function sortPairsBySeverity(pairs: any[]) {
   return pairs.sort((left, right) => {
     const severityDiff =
-      (severityOrder[left.severity] ?? 3) - (severityOrder[right.severity] ?? 3);
+      (SEVERITY_ORDER[left.severity] ?? 3) - (SEVERITY_ORDER[right.severity] ?? 3);
     if (severityDiff !== 0) {
       return severityDiff;
     }

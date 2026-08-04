@@ -4,6 +4,7 @@ import { useState } from "react";
 import type { RecipientProfile } from "../lib/types";
 import type { AgentInfo } from "./types";
 import { EXPLORER_ACCOUNT_URL } from "../lib/stellar-network";
+import { getTranslations, type Locale } from "../i18n";
 
 export interface RecipientOption {
   id: string;
@@ -25,6 +26,8 @@ export interface DashboardHeaderProps {
   agentInfoError?: string | null;
   spendingError?: string | null;
   transactionsError?: string | null;
+  recipientsError?: string | null;
+  locale?: Locale;
 }
 
 export function DashboardHeader({
@@ -41,13 +44,17 @@ export function DashboardHeader({
   agentInfoError,
   spendingError,
   transactionsError,
+  recipientsError,
+  locale = "en",
 }: DashboardHeaderProps) {
   const [tooltipVisible, setTooltipVisible] = useState(false);
+  const t = getTranslations(locale);
 
   const sourceErrors: { source: string; error: string }[] = [
     ...(agentInfoError ? [{ source: 'Agent', error: agentInfoError }] : []),
     ...(spendingError ? [{ source: 'Spending', error: spendingError }] : []),
     ...(transactionsError ? [{ source: 'Transactions', error: transactionsError }] : []),
+    ...(recipientsError ? [{ source: 'Recipients', error: recipientsError }] : []),
   ];
   const anySourceDown = sourceErrors.length > 0;
   return (
@@ -70,17 +77,17 @@ export function DashboardHeader({
               className={`w-1.5 h-1.5 rounded-full ${agentConnected ? (agentPaused ? "bg-amber-500" : "bg-green-500") : "bg-red-500"}`}
             />
             {!agentConnected
-              ? "Disconnected"
+              ? t.status.disconnected
               : agentPaused
-                ? "Paused"
-                : "Active"}
+                ? t.status.paused
+                : t.status.active}
           </div>
           {agentConnected && (
             <button
               onClick={onTogglePause}
               className={`px-3 py-1 rounded-full text-xs font-medium transition-all cursor-pointer ${agentPaused ? "bg-green-100 text-green-700 hover:bg-green-200" : "bg-amber-100 text-amber-700 hover:bg-amber-200"}`}
             >
-              {agentPaused ? "Resume" : "Pause"}
+              {agentPaused ? t.actions.resume : t.actions.pause}
             </button>
           )}
           {anySourceDown && (
@@ -123,7 +130,7 @@ export function DashboardHeader({
               rel="noopener noreferrer"
               className="text-right group"
             >
-              <div className="text-xs text-slate-500">Agent Wallet (USDC)</div>
+              <div className="text-xs text-slate-500">{t.wallet.agentWallet}</div>
               <div className="font-semibold text-sm group-hover:text-sky-600">
                 ${walletBalance}
               </div>
@@ -132,13 +139,13 @@ export function DashboardHeader({
           <div className="h-6 w-px bg-slate-200" />
           <div className="flex items-center gap-2">
             <div className="text-right text-xs">
-              <div className="text-slate-500">Care Recipient</div>
+              <div className="text-slate-500">{t.wallet.careRecipient}</div>
               {recipients && recipients.length > 1 && onSelectRecipient ? (
                 <select
                   className="font-medium bg-transparent border-none outline-none cursor-pointer text-xs"
                   value={selectedRecipientId ?? ''}
                   onChange={(e) => onSelectRecipient(e.target.value)}
-                  aria-label="Select care recipient"
+                  aria-label={t.wallet.careRecipient}
                 >
                   {recipients.map((r) => (
                     <option key={r.id} value={r.id}>{r.name}</option>

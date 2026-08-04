@@ -9,6 +9,15 @@ export default function Error({ error, reset }: { error: Error & { digest?: stri
     captureException(error, { digest: error.digest });
   }, [error]);
 
+  const handleResetAgent = async () => {
+    try {
+      await fetch("/agent/reset", { method: "POST" });
+    } catch {
+      // Silently ignore network errors during reset
+    }
+    window.location.reload();
+  };
+
   return (
     <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
       <div className="bg-white rounded-xl border border-slate-200 p-8 max-w-md text-center">
@@ -36,7 +45,7 @@ export default function Error({ error, reset }: { error: Error & { digest?: stri
           </button>
         </div>
         <button
-          onClick={reset}
+          onClick={handleResetAgent}
           className="mt-3 w-full py-2 px-4 border border-slate-300 text-slate-600 rounded-lg text-sm font-medium hover:bg-slate-50 active:bg-slate-100 transition-all cursor-pointer"
         >
           Reset Agent

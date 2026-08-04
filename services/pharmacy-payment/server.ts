@@ -28,7 +28,7 @@ import {
   type MedicationOrderInput,
 } from "./validation.ts";
 
-const PORT = parseInt(process.env.PHARMACY_PAYMENT_PORT || "3005");
+const PORT = parseInt(process.env.PHARMACY_PAYMENT_PORT || "3005", 10);
 const RECIPIENT = process.env.PHARMACY_1_PUBLIC_KEY;
 const MPP_SECRET_KEY = process.env.MPP_SECRET_KEY;
 const NETWORK = "stellar:testnet";

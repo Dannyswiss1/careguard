@@ -11,7 +11,6 @@
 import "dotenv/config";
 import { createHash } from "crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "fs";
-import { existsSync, mkdirSync } from "fs";
 import express, { type Express } from "express";
 import OpenAI from "openai";
 import { Keypair, Horizon } from "@stellar/stellar-sdk";
@@ -52,7 +51,7 @@ import { verifyWebhook } from "../shared/verify-webhook.ts";
 import { executeTool, runAgent, buildSystemPrompt } from "./runner.ts";
 import { requireApiKey } from "../shared/auth.ts";
 
-const PORT = parseInt(process.env.AGENT_PORT || "3004");
+const PORT = parseInt(process.env.AGENT_PORT || "3004", 10);
 
 if (!process.env.LLM_API_KEY) throw new Error("LLM_API_KEY required in .env");
 if (!process.env.AGENT_SECRET_KEY) throw new Error("AGENT_SECRET_KEY required in .env");
