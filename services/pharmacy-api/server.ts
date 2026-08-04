@@ -19,6 +19,7 @@ import { pathToFileURL } from "url";
 import { applyX402Middleware, NETWORK, OZ_FACILITATOR_URL } from "../../shared/x402-middleware.ts";
 import { createCorsMiddleware } from "../../shared/cors.ts";
 import { applySecurityMiddleware } from "../../shared/security-middleware.ts";
+import { createPharmacyAdminAuth } from "../../shared/pharmacy-admin-auth.ts";
 import { logger } from "../../shared/logger.ts";
 import { requestContextMiddleware } from "../../shared/request-context.ts";
 import { requestLoggerMiddleware } from "../../shared/request-logger.ts";
@@ -26,7 +27,7 @@ import { pharmacyUnknownDrugTotal } from "../../shared/metrics.ts";
 import type { PharmacyPricingStore } from "./db.ts";
 import { createPharmacyPricingStore } from "./db.ts";
 import { resolveRequestedDosage } from "./dosage.ts";
-import { PRICING_DATABASE, getAvailableDrugs } from "../../shared/pharmacy-pricing.ts";
+import { PRICING_DATABASE, getPharmacyPrices, getAvailableDrugs } from "../../shared/pharmacy-pricing.ts";
 import {
   buildCompareResponse,
   DrugRecordSchema,
@@ -41,39 +42,16 @@ import type {
   PharmacyRecordInput,
 } from "./logic.ts";
 
-const PORT = parseInt(process.env.PHARMACY_API_PORT || "3001");
+const PORT = parseInt(process.env.PHARMACY_API_PORT || "3001", 10);
 const PAY_TO = process.env.PHARMACY_1_PUBLIC_KEY;
+
+if (!PAY_TO) throw new Error("PHARMACY_1_PUBLIC_KEY required in .env");
 
 export interface PharmacyAppOptions {
   payTo: string;
   pricingStore?: PharmacyPricingStore;
   adminToken?: string;
   enablePayments?: boolean;
-}
-
-function createAdminMiddleware(adminToken?: string) {
-  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    if (!adminToken) {
-      res.status(503).json({ error: "PHARMACY_ADMIN_TOKEN not configured" });
-      return;
-    }
-
-    const auth = req.headers.authorization;
-    if (!auth?.startsWith("Bearer ")) {
-      res
-        .status(401)
-        .setHeader("WWW-Authenticate", "Bearer")
-        .json({ error: "Missing admin token" });
-      return;
-    }
-
-    if (auth.slice("Bearer ".length) !== adminToken) {
-      res.status(403).json({ error: "Invalid admin token" });
-      return;
-    }
-
-    next();
-  };
 }
 
 function sendCrudNotFound(res: express.Response, message: string) {
@@ -135,7 +113,7 @@ export function createPharmacyApp(options: PharmacyAppOptions) {
     });
   }
 
-  const requireAdmin = createAdminMiddleware(adminToken);
+  const requireAdmin = createPharmacyAdminAuth(adminToken);
 
   app.post("/pharmacy/drugs", requireAdmin, (req, res) => {
     const parsedBody = DrugRecordSchema.safeParse(req.body);
@@ -272,17 +250,14 @@ export function createPharmacyApp(options: PharmacyAppOptions) {
     const dosage = resolveRequestedDosage(drug, query.dosage);
 
     try {
-      const prices = pricingStore.getPrices(drug);
-      if (prices.length === 0) {
-        pharmacyUnknownDrugTotal.inc({ drug });
-        res.status(404).json({ ok: false, reason: "NO_PRICES_FOUND" });
-        return;
-      }
+      const { prices, usedZipCode, isFallbackZip } = getPharmacyPrices(drug, query.zip);
       res.json(
         buildCompareResponse({
           drug,
           dosage,
           zip: query.zip,
+          usedZipCode,
+          isFallbackZip,
           payTo: options.payTo,
           network: NETWORK,
           prices,
@@ -318,20 +293,16 @@ export function createPharmacyApp(options: PharmacyAppOptions) {
   };
 }
 
-export const defaultPharmacyApp: ReturnType<typeof createPharmacyApp> | undefined = PAY_TO
-  ? createPharmacyApp({ payTo: PAY_TO })
-  : undefined;
+export const defaultPharmacyApp: ReturnType<typeof createPharmacyApp> = createPharmacyApp({
+  payTo: PAY_TO,
+});
 
 const entrypointUrl = process.argv[1]
   ? pathToFileURL(path.resolve(process.argv[1])).href
   : "";
 
 if (import.meta.url === entrypointUrl) {
-  if (!PAY_TO) {
-    throw new Error("PHARMACY_1_PUBLIC_KEY required in .env");
-  }
-
-  const startedApp = defaultPharmacyApp ?? createPharmacyApp({ payTo: PAY_TO });
+  const startedApp = defaultPharmacyApp;
   const server = startedApp.app.listen(PORT, () => {
     logger.info(
       {

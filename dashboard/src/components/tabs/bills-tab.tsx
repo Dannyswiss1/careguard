@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
+import { toast } from "sonner";
 import { downloadBillAuditPDF, downloadDisputeLetterPDF, downloadDisputeLetterEmail } from "../../app/pdf";
 import {
   BillAuditResultSchema,
@@ -9,23 +10,29 @@ import {
 } from "../../lib/types";
 import { BillLineItemsVirtualized } from "../primitives/bill-line-items-virtualized";
 import type { AgentResult } from "../types";
+import { getTranslations, type Locale } from "../../i18n";
 
 export interface BillsTabProps {
   agentResult: AgentResult | null;
   recipient: RecipientProfile;
+  locale?: Locale;
 }
 
-export function BillsTab({ agentResult, recipient }: BillsTabProps) {
+export function BillsTab({ agentResult, recipient, locale = "en" }: BillsTabProps) {
   const [showErrorsOnly, setShowErrorsOnly] = useState(false);
   const [generatingDispute, setGeneratingDispute] = useState<string | null>(null);
+  const b = getTranslations(locale).bills;
 
   const auditCalls = agentResult?.toolCalls.filter(
     (t) =>
       t.tool === "audit_medical_bill" || t.tool === "fetch_and_audit_bill",
   );
 
-  const handleDispute = useCallback(async (auditResult: any, index: number) => {
-    setGeneratingDispute(`dispute-${index}`);
+  const auditCallKey = (tc: NonNullable<typeof auditCalls>[number]) =>
+    tc.id ?? `${tc.tool}-${JSON.stringify(tc.input)}`;
+
+  const handleDispute = useCallback(async (auditResult: any, auditKey: string) => {
+    setGeneratingDispute(auditKey);
     try {
       const letter: DisputeLetter = {
         billId: `bill-${Date.now()}`,
@@ -69,38 +76,43 @@ export function BillsTab({ agentResult, recipient }: BillsTabProps) {
       className="space-y-6"
     >
       {auditCalls && auditCalls.length > 0 ? (
-        auditCalls.map((t, i) => (
+        auditCalls.map((tc) => (
           <div
-            key={i}
+            // The tool-call ID (or legacy payload composite) stays stable across list reordering.
+            key={auditCallKey(tc)}
             className="bg-white rounded-xl border border-slate-200 p-6"
           >
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-sm font-semibold text-slate-700">
-                Bill Audit Results
+                {b.title}
               </h2>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() =>
-                    downloadBillAuditPDF(BillAuditResultSchema.parse(t.result), {
-                      errorsOnly: showErrorsOnly,
-                      recipient,
-                    })
-                  }
+                  onClick={() => {
+                    try {
+                      downloadBillAuditPDF(BillAuditResultSchema.parse(tc.result), {
+                        errorsOnly: showErrorsOnly,
+                        recipient,
+                      });
+                    } catch {
+                      toast.error("Couldn't parse bill audit result — try again");
+                    }
+                  }}
                   className="px-3 py-1.5 bg-sky-50 text-sky-700 rounded-lg text-xs font-medium hover:bg-sky-100 active:bg-sky-200 cursor-pointer transition-all"
                 >
-                  Download PDF
+                  {b.downloadPdf}
                 </button>
-                {t.result.errorCount > 0 && (
+                {tc.result.errorCount > 0 && (
                   <>
                     <button
-                      onClick={() => handleDispute(t.result, i)}
-                      disabled={generatingDispute === `dispute-${i}`}
+                      onClick={() => handleDispute(tc.result, auditCallKey(tc))}
+                      disabled={generatingDispute === auditCallKey(tc)}
                       className="px-3 py-1.5 bg-red-50 text-red-700 rounded-lg text-xs font-medium hover:bg-red-100 active:bg-red-200 cursor-pointer transition-all disabled:opacity-50"
                     >
-                      {generatingDispute === `dispute-${i}` ? "Generating..." : "Dispute"}
+                      {generatingDispute === auditCallKey(tc) ? "Generating..." : "Dispute"}
                     </button>
                     <button
-                      onClick={() => handleDisputeEmail(t.result)}
+                      onClick={() => handleDisputeEmail(tc.result)}
                       className="px-3 py-1.5 bg-amber-50 text-amber-700 rounded-lg text-xs font-medium hover:bg-amber-100 active:bg-amber-200 cursor-pointer transition-all"
                     >
                       Email Text
@@ -108,58 +120,58 @@ export function BillsTab({ agentResult, recipient }: BillsTabProps) {
                   </>
                 )}
                 <span
-                  className={`px-3 py-1 rounded-full text-xs font-medium ${
-                    t.result.errorCount > 0
-                      ? "bg-red-100 text-red-700"
-                      : "bg-green-100 text-green-700"
-                  }`}
+                  className={`px-3 py-1 rounded-full text-xs font-medium ${tc.result.errorCount > 0
+                    ? "bg-red-100 text-red-700"
+                    : "bg-green-100 text-green-700"
+                    }`}
                 >
-                  {t.result.errorCount} errors found
+                  {tc.result.errorCount} {b.errorsFound}
                 </span>
               </div>
             </div>
             <div className="grid grid-cols-3 gap-4 mb-4">
               <div className="bg-slate-50 rounded-lg p-3 text-center">
-                <div className="text-lg font-bold">${t.result.totalCharged}</div>
-                <div className="text-xs text-slate-500">Total Charged</div>
+                <div className="text-lg font-bold">${tc.result.totalCharged}</div>
+                <div className="text-xs text-slate-500">{b.totalCharged}</div>
               </div>
               <div className="bg-red-50 rounded-lg p-3 text-center">
                 <div className="text-lg font-bold text-red-600">
-                  ${t.result.totalOvercharge}
+                  ${tc.result.totalOvercharge}
                 </div>
-                <div className="text-xs text-slate-500">Overcharges</div>
+                <div className="text-xs text-slate-500">{b.overcharges}</div>
               </div>
               <div className="bg-green-50 rounded-lg p-3 text-center">
                 <div className="text-lg font-bold text-green-600">
-                  ${t.result.totalCorrect}
+                  ${tc.result.totalCorrect}
                 </div>
-                <div className="text-xs text-slate-500">Correct Amount</div>
+                <div className="text-xs text-slate-500">{b.correctAmount}</div>
               </div>
             </div>
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs text-slate-500">
-                {t.result.lineItems.length} line items
+                {tc.result.lineItems.length} {b.lineItems}
               </span>
               <button
                 onClick={() => setShowErrorsOnly(!showErrorsOnly)}
+                aria-pressed={showErrorsOnly}
                 className="text-xs text-sky-600 hover:text-sky-800 cursor-pointer"
               >
-                {showErrorsOnly ? "Show all items" : "Show errors only"}
+                {showErrorsOnly ? b.showAll : b.showErrors}
               </button>
             </div>
             <BillLineItemsVirtualized
-              lineItems={t.result.lineItems.filter(
+              lineItems={tc.result.lineItems.filter(
                 (item: any) => !showErrorsOnly || item.status !== "valid",
               )}
             />
             <p className="mt-4 text-sm font-medium text-slate-700">
-              {t.result.recommendation}
+              {tc.result.recommendation}
             </p>
           </div>
         ))
       ) : (
         <div className="bg-white rounded-xl border border-slate-200 p-12 text-center text-sm text-slate-400">
-          No bills audited yet. Run &quot;Audit Hospital Bill&quot; from Overview.
+          {b.notAudited}
         </div>
       )}
     </div>

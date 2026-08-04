@@ -38,3 +38,11 @@ local UI state (a confirm-dialog open flag, a "show errors only" toggle, etc).
 - Primitives must not import from `tabs/` or `app/`. Tabs may import primitives.
 - Keep `app/page.tsx` under ~250 lines. If a tab grows large, split it further
   inside `tabs/<name>/`.
+
+## Testing
+
+Test files live in [`src/__tests__/`](../__tests__/) alongside the rest of the
+dashboard test suite.  When adding a new test, place it in that directory and
+use a relative import from `../components/…` to reach the module under test.
+This keeps a single glob (`src/**/*.test.{ts,tsx}`) sufficient for running all
+dashboard tests.

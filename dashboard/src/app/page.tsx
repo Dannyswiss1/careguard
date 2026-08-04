@@ -2,6 +2,7 @@
 
 import { usePathname, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { isValidLocale, type Locale } from "../i18n";
 import { DashboardFooter } from "../components/dashboard-footer";
 import { DashboardHeader } from "../components/dashboard-header";
 import { DashboardTabsNav } from "../components/dashboard-tabs-nav";
@@ -23,6 +24,8 @@ import { ConfigErrorPage } from "../components/config-error-page";
 import { AGENT_URL } from "../lib/agent-url";
 
 
+import { DEFAULT_LOCALE } from "../i18n";
+
 export default function Dashboard() {
   // In production, AGENT_URL is null when NEXT_PUBLIC_API_URL is unset.
   // Show a configuration error page rather than a confusing connection failure
@@ -32,7 +35,7 @@ export default function Dashboard() {
   }
 
   const { recipient, caregiver, updateProfile } = useProfile();
-  const { recipients, selectedId, selectRecipient } = useRecipients((profile) => {
+  const { recipients, selectedId, selectRecipient, error: recipientsError } = useRecipients((profile) => {
     updateProfile({ recipient: profile });
   });
   const pathname = usePathname();
@@ -53,6 +56,8 @@ export default function Dashboard() {
       : "overview";
   }, [searchParams]);
 
+  const localeParam = searchParams.get("locale");
+  const locale: Locale = isValidLocale(localeParam || "") ? localeParam as Locale : "en";
   const state = useAgentState({ activeTab });
 
   const ariaLogRef = useRef<number | null>(null);
@@ -100,9 +105,10 @@ export default function Dashboard() {
         agentInfoError={state.agentInfoError}
         spendingError={state.spendingError}
         transactionsError={state.transactionsError}
+        recipientsError={recipientsError}
       />
       <div className="max-w-7xl mx-auto px-4 py-6">
-        <DashboardTabsNav activeTab={activeTab} pathname={pathname} />
+        <DashboardTabsNav activeTab={activeTab} pathname={pathname} locale={locale} />
         {activeTab === "overview" && (
           <OverviewTab
             spending={state.spending}
@@ -113,22 +119,33 @@ export default function Dashboard() {
             onRunTask={state.runAgentTask}
             onCancelTask={state.cancelAgentTask}
             recipient={recipient}
+            locale={locale}
+            locale={DEFAULT_LOCALE}
           />
         )}
         {activeTab === "medications" && (
           <MedicationsTab
             agentResult={state.agentResult}
             recipient={recipient}
+            locale={locale}
           />
         )}
         {activeTab === "bills" && (
           <BillsTab
             agentResult={state.agentResult}
             recipient={recipient}
+            locale={locale}
           />
         )}
         {activeTab === "approvals" && (
-          <ApprovalsTab agentConnected={state.agentConnected} />
+          <ApprovalsTab
+            agentConnected={state.agentConnected}
+            approvals={state.approvals}
+            loading={state.approvalsLoading}
+            onApprove={state.approveTransaction}
+            onCancel={state.cancelTransaction}
+            locale={locale}
+          />
         )}
         {activeTab === "policy" && (
           <PolicyTab
@@ -160,6 +177,7 @@ export default function Dashboard() {
             agentLog={state.agentLog}
             setAgentLog={state.setAgentLog}
             allTransactions={state.allTransactions}
+            fetchAllTransactions={state.fetchTransactionHistory}
             auditEvents={state.auditEvents}
             pagination={state.pagination}
             currentPage={state.currentPage}
@@ -170,6 +188,7 @@ export default function Dashboard() {
             onResetAgent={state.resetAgent}
             loadingTransactions={state.loadingTransactions}
             loadingSpending={state.loadingSpending}
+            locale={locale}
           />
         )}
         {activeTab === "settings" && (

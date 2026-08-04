@@ -42,13 +42,14 @@ function buildProps(overrides: Partial<PolicyTabProps> = {}): PolicyTabProps {
 }
 
 describe("PolicyTab — rendering (Issue #47)", () => {
-  it("renders all 5 number input fields", () => {
+  it("renders all 6 number input fields", () => {
     render(<PolicyTab {...buildProps()} />);
     expect(screen.getByLabelText(/Daily Spending Limit/i)).toBeTruthy();
     expect(screen.getByLabelText(/Monthly Spending Limit/i)).toBeTruthy();
     expect(screen.getByLabelText(/Medication Monthly Budget/i)).toBeTruthy();
     expect(screen.getByLabelText(/Bill Monthly Budget/i)).toBeTruthy();
     expect(screen.getByLabelText(/Caregiver Approval Threshold/i)).toBeTruthy();
+    expect(screen.getByLabelText(/Hold Time Before Auto-Approval/i)).toBeTruthy();
   });
 
   it("populates fields with values from spending.policy (the policyForm prop)", () => {

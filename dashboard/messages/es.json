@@ -12,15 +12,12 @@
     "pause": "Pausar",
     "resume": "Reanudar"
   },
-  "wallet": {
-    "agentWallet": "Billetera del Agente (USDC)",
-    "careRecipient": "Paciente"
-  },
   "tabs": {
     "overview": "Resumen",
     "medications": "Medicamentos",
     "bills": "Facturas",
-    "policy": "Politica",
+    "approvals": "Aprobaciones",
+    "policy": "Política",
     "wallet": "Billetera",
     "activity": "Actividad",
     "settings": "Ajustes"
@@ -28,27 +25,27 @@
   "overview": {
     "monthlySpending": "Gasto Mensual",
     "savingsFound": "Ahorros Encontrados",
-    "billingErrors": "Errores de Facturacion",
+    "billingErrors": "Errores de Facturación",
     "agentApiCosts": "Costos de API del Agente",
     "budgetStatus": "Estado del Presupuesto",
     "agentActions": "Acciones del Agente",
     "agentResponse": "Respuesta del Agente",
-    "limit": "limite",
+    "limit": "límite",
     "bySwitching": "cambiando de farmacia",
     "inOvercharges": "en sobrecargos identificados",
-    "queries": "consultas via x402"
+    "queries": "consultas vía x402"
   },
   "budget": {
     "medications": "Medicamentos",
-    "medicalBills": "Facturas Medicas"
+    "medicalBills": "Facturas Médicas"
   },
   "tasks": {
     "comparePrices": "Comparar Precios de Medicamentos",
-    "findCheapest": "Encontrarfarmacias mas economicas para los 4 medicamentos de Rosa",
+    "findCheapest": "Encontrar farmacias más económicas para los 4 medicamentos de Rosa",
     "auditBill": "Auditar Factura Hospitalaria",
     "scanBill": "Escanear factura de Rosa buscar errores",
     "overBudget": "Intentar Pago Excedente",
-    "demoPayment": "Demo: agente intenta $600 (sobre limite de $500)",
+    "demoPayment": "Demo: agente intenta $600 (sobre límite de $500)",
     "agentPaused": "Agente pausado",
     "working": "Agente trabajando..."
   },
@@ -56,82 +53,86 @@
     "title": "Medicamentos de Rosa",
     "downloadPdf": "Descargar PDF",
     "best": "Mejor",
-    "notYetCompared": "Aun no comparado",
+    "notYetCompared": "Aún no comparado",
     "save": "Ahorrar",
     "savings": "ahorro",
     "drugInteractions": "Interacciones Medicamentosas"
   },
   "bills": {
-    "title": "Resultados de Auditoria",
+    "title": "Resultados de Auditoría",
     "downloadPdf": "Descargar PDF",
     "errorsFound": "errores encontrados",
     "totalCharged": "Total Cargado",
     "overcharges": "Sobrecargos",
     "correctAmount": "Monto Correcto",
-    "lineItems": "lineas",
+    "lineItems": "líneas",
     "showErrors": "Mostrar solo errores",
     "showAll": "Mostrar todo",
     "notAudited": "No hay facturas auditadas. Ejecute \"Auditar Factura\" desde Resumen."
   },
   "policy": {
-    "title": "Politica de Gastos para Rosa",
-    "description": "Estos limites son implementados por contratos inteligente en Stellar. El agente no puede excederlos.",
-    "dailyLimit": "Limite Diario ($)",
-    "monthlyLimit": "Limite Mensual ($)",
+    "title": "Política de Gastos para Rosa",
+    "description": "Estos límites son implementados por el agente CareGuard en el servidor antes de cada pago.",
+    "dailyLimit": "Límite Diario ($)",
+    "monthlyLimit": "Límite Mensual ($)",
     "medicationBudget": "Presupuesto Mensual Medicamentos ($)",
     "billBudget": "Presupuesto Mensual Facturas ($)",
-    "approvalThreshold": "Umbral de Aprobacion del Cuidador ($)",
+    "approvalThreshold": "Umbral de Aprobación del Cuidador ($)",
+    "holdTime": "Tiempo de Espera Antes de Aprobación Automática (segundos)",
     "refresh": "Actualizar del servidor",
     "discard": "Descartar cambios",
-    "updatePolicy": "Actualizar Politica",
-    "policySaved": "Politica Guardada"
+    "updatePolicy": "Actualizar Política",
+    "policySaved": "Política Guardada"
   },
   "activity": {
     "title": "Registro de Transacciones",
     "downloadReport": "Descargar Informe",
+    "preparingReport": "Preparando informe…",
     "reset": "Reiniciar Todo",
     "noActivity": "Sin actividad del agente...",
     "noTransactions": "Sin transacciones",
     "time": "Hora",
     "type": "Tipo",
-    "description": "Descripcion",
+    "description": "Descripción",
     "amount": "Monto",
     "status": "Estado",
     "stellarTx": "Tx Stellar"
   },
   "wallet": {
     "title": "Billetera del Agente",
-    "description": "Esta es la billetera Stellar del agente IA. Contiene USDC para pagar farmacias, facturas medicas y consultas de API. Todos los saldos estan en Stellar testnet.",
+    "description": "Esta es la billetera Stellar del agente IA. Contiene USDC para pagar farmacias, facturas médicas y consultas de API. Todos los saldos están en Stellar testnet.",
+    "agentWallet": "Billetera del Agente (USDC)",
+    "careRecipient": "Paciente",
     "usdcBalance": "Saldo USDC",
     "xlmBalance": "Saldo XLM",
-    "walletAddress": "Direccion de Billetera",
+    "walletAddress": "Dirección de Billetera",
     "network": "Red",
     "llmProvider": "Proveedor LLM",
     "networkStellar": "Stellar Testnet",
     "viewExplorer": "Ver en Stellar Explorer",
     "fund": "Recargar con USDC",
-    "howPayments": "Como Funcionan los Pagos"
+    "howPayments": "Cómo Funcionan los Pagos"
   },
   "settings": {
     "recipient": "Paciente",
     "name": "Nombre",
     "age": "Edad",
     "medications": "Medicamentos",
-    "doctor": "Medico Principal",
+    "doctor": "Médico Principal",
     "insurance": "Seguro",
     "caregiver": "Cuidador",
     "relationship": "Parentesco",
-    "location": "Ubicacion",
+    "location": "Ubicación",
     "notifications": "Notificaciones",
-    "agentConfig": "Configuracion del Agente",
+    "agentConfig": "Configuración del Agente",
     "agentStatus": "Estado del Agente",
     "notConnected": "No conectado"
   },
   "pdf": {
     "careguard": "CareGuard",
     "subtitle": "Agente de Salud con IA en Stellar",
-    "billAudit": "Informe de Auditoria de Factura Medica",
-    "medication": "Informe de Comparacion de Precios",
+    "billAudit": "Informe de Auditoría de Factura Médica",
+    "medication": "Informe de Comparación de Precios",
     "transaction": "Informe de Transacciones",
     "generated": "Generado"
   },

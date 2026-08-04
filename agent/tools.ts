@@ -28,7 +28,7 @@
 
 import 'dotenv/config';
 import { fileURLToPath } from 'url';
-import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, renameSync, promises as fsPromises } from 'fs';
+import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, readdirSync, renameSync, promises as fsPromises } from 'fs';
 import { z } from 'zod';
 import { logger } from '../shared/logger.ts';
 import { resolveStellarNetwork, validateSignerKeyForNetwork } from '../shared/stellar-network.ts';
@@ -145,7 +145,7 @@ if (STELLAR_CONFIG.networkType === 'public' && !process.env.USDC_ISSUER) {
 }
 
 const MIN_FEE_STROOPS = 100;
-const MAX_FEE_STROOPS = parseInt(process.env.MAX_FEE_STROOPS || '100000');
+const MAX_FEE_STROOPS = parseInt(process.env.MAX_FEE_STROOPS || '100000', 10);
 const STELLAR_TIMEBOUNDS_SECONDS = parseInt(process.env.STELLAR_TIMEBOUNDS_SECONDS || "60", 10);
 
 // Overall wall-clock budget for the fee-bump + retry path (issue #797):
@@ -223,6 +223,22 @@ export function extractX402TxHash(
   return TX_HASH_EXTRACTION_FAILED;
 }
 
+/**
+ * Read a Stellar transaction result code from a Horizon error.
+ *
+ * Horizon reports failures as `extras.result_codes.transaction` on a 400
+ * response; only some SDK/network paths surface the code in `err.message`.
+ * Matching on the message alone missed every real Horizon rejection (issue #796),
+ * so both are checked.
+ */
+function getTxResultCode(err: any): string {
+  return err?.response?.data?.extras?.result_codes?.transaction ?? "";
+}
+
+function isTxResultCode(err: any, code: string): boolean {
+  return getTxResultCode(err) === code || String(err?.message ?? "").includes(code);
+}
+
 // Helper: submitTransaction with timeout and retry
 export async function submitTransactionWithRetry(
   server: Horizon.Server,
@@ -243,11 +259,22 @@ export async function submitTransactionWithRetry(
       return result;
     } catch (err: any) {
       lastError = err;
-      if (err?.response?.status) throw err;
-      const msg = err?.message ?? "";
+
+      const isBadSeq = isTxResultCode(err, "tx_bad_seq");
+      const isTooLate = isTxResultCode(err, "tx_too_late");
+      const isTooEarly = isTxResultCode(err, "tx_too_early");
+
+      // Horizon errors carry an HTTP status; only the sequence/timebound codes
+      // below are recoverable, everything else propagates untouched.
+      if (err?.response?.status && !isBadSeq && !isTooLate && !isTooEarly) throw err;
+
+      // tx_too_early: the transaction is not yet valid. Rebuilding cannot help —
+      // a fresh envelope has the same lower timebound — so surface it distinctly
+      // rather than burning retries or reloading the account.
+      if (isTooEarly) throw err;
 
       // tx_bad_seq: sequence number mismatch — reload account and rebuild with 1 s backoff
-      if (msg.includes("tx_bad_seq") && rebuildTx) {
+      if (isBadSeq && rebuildTx) {
         for (let seqRetry = 0; seqRetry < 3; seqRetry++) {
           if (deadlineAt !== undefined && clock.now() >= deadlineAt) {
             throw new RetryBudgetExceededError(FEE_BUMP_BUDGET_MS);
@@ -259,6 +286,7 @@ export async function submitTransactionWithRetry(
             break;
           }
           stellarTxBadSeqRetriesTotal.inc();
+          paybillSeqRetryTotal++;
           logger.warn(
             { seq: tx?.sequence, attempt: seqRetry + 1, reason: "tx_bad_seq" },
             "[Stellar] tx_bad_seq — reloaded account, retrying",
@@ -271,19 +299,22 @@ export async function submitTransactionWithRetry(
             return result;
           } catch (retryErr: any) {
             lastError = retryErr;
-            if (!retryErr?.message?.includes("tx_bad_seq")) throw retryErr;
+            if (!isTxResultCode(retryErr, "tx_bad_seq")) throw retryErr;
           }
         }
         throw lastError;
       }
 
       // tx_too_late: timebounds expired — retry once with fresh timebounds if rebuild fn provided
-      if (msg.includes("tx_too_late") && rebuildTx && attempt < maxRetries) {
+      if (isTooLate && rebuildTx && attempt < maxRetries) {
         logger.warn({ attempt: attempt + 1 }, "[Stellar] tx_too_late, rebuilding with fresh timebounds");
         tx = await rebuildTx();
         continue;
       }
-      if (msg.includes("tx_bad_seq") || msg.includes("tx_too_early") || msg.includes("tx_too_late")) throw err;
+      // A sequence/timebound failure with no way to recover (no rebuild fn, or
+      // retries exhausted) is terminal — never fall through to the generic
+      // backoff, which would resubmit the same doomed envelope.
+      if (isBadSeq || isTooEarly || isTooLate) throw err;
       if (attempt < maxRetries) {
         const delay = Math.pow(2, attempt) * 500;
         if (deadlineAt !== undefined && clock.now() + delay >= deadlineAt) {
@@ -301,7 +332,15 @@ export async function submitTransactionWithRetry(
 }
 
 // Helper: submit transaction with automatic fee bump on insufficient_fee error.
-// Wraps retries in fee-bump envelopes, doubling the fee each time (up to 3x max).
+//
+// Attempt 1 submits a plain transaction at the recommended fee. Each
+// tx_insufficient_fee doubles the fee (capped at MAX_FEE_STROOPS) and resubmits
+// the transaction wrapped in a fee-bump envelope, for at most FEE_BUMP_MAX_ATTEMPTS
+// submissions in total. When the last allowed attempt still fails, that failure
+// is surfaced — the loop never retries indefinitely. Non-fee errors are never
+// wrapped and propagate on the spot.
+export const FEE_BUMP_MAX_ATTEMPTS = 3;
+
 export async function submitTransactionWithFeeBump(
   server: Horizon.Server,
   account: any,
@@ -312,87 +351,79 @@ export async function submitTransactionWithFeeBump(
 ): Promise<{ hash: string; fee: string }> {
   let currentFee = initialFee || await getRecommendedFee();
   let attempt = 0;
-  const maxAttempts = 3; // up to 3 fee bumps
   const deadlineAt = clock.now() + FEE_BUMP_BUDGET_MS;
 
-  while (attempt < maxAttempts) {
+  const buildInner = (source: any) => {
+    const builder = new TransactionBuilder(source, {
+      fee: currentFee,
+      networkPassphrase: STELLAR_NETWORK_PASSPHRASE,
+    });
+    for (const op of operations) {
+      builder.addOperation(op);
+    }
+    const built = builder.setTimeout(STELLAR_TIMEBOUNDS_SECONDS).build();
+    built.sign(signer);
+    const sigHint = built.signatures[0]?.hint();
+    if (!sigHint || !sigHint.equals(signer.signatureHint())) {
+      throw new Error(`Signer mismatch: expected ${signer.publicKey()} — refusing to submit`);
+    }
+    return built;
+  };
+
+  while (attempt < FEE_BUMP_MAX_ATTEMPTS) {
     if (clock.now() >= deadlineAt) {
       throw new RetryBudgetExceededError(FEE_BUMP_BUDGET_MS);
     }
+
+    const isFeeBumpAttempt = attempt > 0;
+
     try {
-      const tx = new TransactionBuilder(account, {
-        fee: currentFee,
-        networkPassphrase: STELLAR_NETWORK_PASSPHRASE,
-      });
+      const innerTx = buildInner(account);
 
-      for (const op of operations) {
-        tx.addOperation(op);
-      }
-
-      const builtTx = tx.setTimeout(30).build();
-      builtTx.sign(signer);
-
-      const result = await submitTransactionWithRetry(server, builtTx, 2, 35000, async () => {
-        const freshAccount = await server.loadAccount(signer.publicKey());
-        const newTx = new TransactionBuilder(freshAccount, {
-          fee: currentFee,
-          networkPassphrase: STELLAR_NETWORK_PASSPHRASE,
-        });
-        for (const op of operations) {
-          newTx.addOperation(op);
-        }
-        const rebuilt = newTx.setTimeout(30).build();
-        rebuilt.sign(signer);
-        return rebuilt;
-      }, deadlineAt, clock);
-      return { hash: result.hash, fee: currentFee };
-    } catch (err: any) {
-      if (err instanceof RetryBudgetExceededError) throw err;
-      const resultCodes = err?.response?.data?.extras?.result_codes;
-      const isFeeError = resultCodes?.transaction === 'tx_insufficient_fee';
-
-      if (isFeeError && clock.now() >= deadlineAt) {
-        throw new RetryBudgetExceededError(FEE_BUMP_BUDGET_MS);
-      }
-
-      if (isFeeError && attempt < maxAttempts - 1) {
-        // Double the fee and wrap in a fee-bump envelope
-        const newFee = Math.min(parseInt(currentFee) * 2, MAX_FEE_STROOPS);
-        logger.warn(
-          { oldFee: currentFee, newFee, attempt: attempt + 1 },
-          '[Stellar] Insufficient fee, wrapping in fee-bump envelope',
-        );
-        currentFee = newFee.toString();
-        stellarFeeBumpsTotal.inc();
-        attempt++;
-
-        // Build the inner transaction with the new fee
-        const innerTx = new TransactionBuilder(account, {
-          fee: currentFee,
-          networkPassphrase: STELLAR_NETWORK_PASSPHRASE,
-        });
-        for (const op of operations) {
-          innerTx.addOperation(op);
-        }
-        const builtInner = innerTx.setTimeout(30).build();
-        builtInner.sign(signer);
-
-        // Wrap in fee-bump envelope: feeSource is the agent wallet itself
-        const feeBumpTx = TransactionBuilder.buildFeeBumpTransaction(
-          signer,
-          currentFee,
-          builtInner,
-          STELLAR_NETWORK_PASSPHRASE,
-        );
-        feeBumpTx.sign(signer);
-
-        const result = await submitTransactionWithRetry(
-          server, feeBumpTx as any, 2, 35000, undefined, deadlineAt, clock,
-        );
+      if (!isFeeBumpAttempt) {
+        // First attempt: a plain envelope, rebuildable on a sequence collision.
+        const result = await submitTransactionWithRetry(server, innerTx, 2, 35000, async () => {
+          const freshAccount = await server.loadAccount(signer.publicKey());
+          return buildInner(freshAccount);
+        }, deadlineAt, clock);
         return { hash: result.hash, fee: currentFee };
       }
 
-      throw err;
+      // Fee-bump attempt: the inner transaction keeps its own signature and the
+      // agent keypair signs the envelope as fee source. A fee-bump envelope
+      // cannot be rebuilt mid-flight, so no rebuild fn is passed.
+      const feeBumpTx = TransactionBuilder.buildFeeBumpTransaction(
+        signer,
+        currentFee,
+        innerTx,
+        STELLAR_NETWORK_PASSPHRASE,
+      );
+      feeBumpTx.sign(signer);
+
+      const result = await submitTransactionWithRetry(
+        server, feeBumpTx as any, 2, 35000, undefined, deadlineAt, clock,
+      );
+      return { hash: result.hash, fee: currentFee };
+    } catch (err: any) {
+      if (err instanceof RetryBudgetExceededError) throw err;
+
+      // Only an insufficient fee is worth bumping; anything else (tx_bad_auth,
+      // tx_bad_seq that already exhausted its own retries, …) propagates.
+      if (!isTxResultCode(err, "tx_insufficient_fee")) throw err;
+
+      attempt++;
+      if (attempt >= FEE_BUMP_MAX_ATTEMPTS) throw err;
+      if (clock.now() >= deadlineAt) {
+        throw new RetryBudgetExceededError(FEE_BUMP_BUDGET_MS);
+      }
+
+      const newFee = Math.min(parseInt(currentFee, 10) * 2, MAX_FEE_STROOPS);
+      logger.warn(
+        { oldFee: currentFee, newFee, attempt },
+        '[Stellar] Insufficient fee, wrapping in fee-bump envelope',
+      );
+      currentFee = newFee.toString();
+      stellarFeeBumpsTotal.inc();
     }
   }
 
@@ -452,55 +483,78 @@ process.on('SIGHUP', () => {
 });
 
 // --- MPP Client: Auto-handles 402 for medication order payments ---
-// Use factory function to create client instance (supports DI for testing)
-let mppClient: MppClientInstance = isMockNetwork()
-  ? {
-      fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
-        const receipt = createMockReceipt('mpp', {
-          url: String(input),
-          body: init?.body ? String(init.body) : '',
-        });
-        return new Response(
-          JSON.stringify({
-            success: true,
-            order: { id: receipt.receiptId },
-            receipt,
-          }),
-          {
-            status: 200,
-            headers: {
-              'Content-Type': 'application/json',
-              'Payment-Receipt': Buffer.from(
-                JSON.stringify({ reference: receipt.stellarTxHash }),
-              ).toString('base64'),
-            },
+// Lazy-constructed on first use and cached for 60s (issue #196) so
+// STELLAR_NETWORK can be switched at runtime via SIGHUP without a full
+// process restart. See docs/runbooks/switch-network.md.
+function createMockMppClient(): MppClientInstance {
+  return {
+    fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+      const receipt = createMockReceipt('mpp', {
+        url: String(input),
+        body: init?.body ? String(init.body) : '',
+      });
+      return new Response(
+        JSON.stringify({
+          success: true,
+          order: { id: receipt.receiptId },
+          receipt,
+        }),
+        {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json',
+            'Payment-Receipt': Buffer.from(
+              JSON.stringify({ reference: receipt.stellarTxHash }),
+            ).toString('base64'),
           },
-        );
-      },
-      get lastTxHash() {
-        return undefined;
-      },
-    }
-  : createMppClient({
-      keypair: agentKeypair,
-      mode: 'pull',
-    });
+        },
+      );
+    },
+    get lastTxHash() {
+      return undefined;
+    },
+  };
+}
+
+export const MPP_CLIENT_TTL_MS = 60_000;
+let _mppClient: MppClientInstance | null = null;
+let _mppClientCreatedAt = 0;
 
 /**
  * Set a custom MPP client instance (for testing/DI).
  * @param client - MPP client instance to use
  */
 export function setMppClient(client: MppClientInstance) {
-  mppClient = client;
+  _mppClient = client;
+  _mppClientCreatedAt = Date.now();
+}
+
+/** Force the next getMppClient() call to construct a fresh client. */
+export function invalidateMppClientCache() {
+  _mppClient = null;
+  _mppClientCreatedAt = 0;
 }
 
 /**
- * Get the current MPP client instance.
+ * Get the current MPP client instance, constructing (or reconstructing) it
+ * if there is none cached or the 60s TTL has elapsed.
  * @returns Current MPP client
  */
 export function getMppClient(): MppClientInstance {
-  return mppClient;
+  const now = Date.now();
+  if (!_mppClient || now - _mppClientCreatedAt > MPP_CLIENT_TTL_MS) {
+    _mppClient = isMockNetwork()
+      ? createMockMppClient()
+      : createMppClient({ keypair: agentKeypair, mode: 'pull' });
+    _mppClientCreatedAt = now;
+  }
+  return _mppClient;
 }
+
+process.on('SIGHUP', () => {
+  invalidateMppClientCache();
+  logger.info('[mpp] SIGHUP received — client cache invalidated, will reload on next call');
+});
 
 // --- Per-recipient data directories (Issue #261) ---
 const DATA_DIR = process.env.DATA_DIR || fileURLToPath(new URL('../data', import.meta.url));
@@ -654,7 +708,7 @@ export const SpendingPolicySchema = z.object({
   { message: 'medicationMonthlyBudget + billMonthlyBudget cannot exceed monthlyLimit', path: ['medicationMonthlyBudget'] },
 );
 
-type SpendingPolicyInput = z.infer<typeof SpendingPolicySchema>;
+type SpendingPolicyInput = z.input<typeof SpendingPolicySchema>;
 
 const SPENDING_CACHE_TTL_MS = 5000;
 /** Compact the JSONL log into a snapshot every this many transactions (Issue #205). */
@@ -965,7 +1019,7 @@ function getSubmissionMutex(keypairId: string): AsyncMutex {
   return m;
 }
 
-const MAX_PAYMENT = 1000;
+export const MAX_PAYMENT = 1000;
 // Platform-level single-transaction cap (issue #83). Sits above the caregiver policy's
 // approvalThreshold so a compromised session cannot bypass it. Only changeable by redeploying.
 // Read on every call so tests can override process.env.MAX_SINGLE_TX_USDC between runs.
@@ -1195,6 +1249,8 @@ export async function comparePharmacyPrices(
       drug: drugName,
       dosage,
       zipCode,
+      usedZipCode: zipCode === '10001' || zipCode === '33101' ? zipCode : '90210',
+      isFallbackZip: zipCode !== '90210' && zipCode !== '10001' && zipCode !== '33101',
       protocol: {
         name: 'x402',
         mockNetwork: true,
@@ -1715,7 +1771,7 @@ async function executeMedicationPayment(
   }
 
   try {
-    const response = await mppClient.fetch(
+    const response = await getMppClient().fetch(
       `${PHARMACY_PAYMENT_API}/pharmacy/order`,
       {
         method: 'POST',
@@ -1936,19 +1992,38 @@ export function cancelPendingTransaction(txId: string): any {
   return { success: true, transaction: tx };
 }
 
-export async function processPendingTransactions() {
-  const tracker = spendingTracker;
-  const now = Date.now();
-  const pending = tracker.transactions.filter(
-    (t: any) =>
-      t.status === 'pending' &&
-      t.pendingUntil &&
-      new Date(t.pendingUntil).getTime() <= now,
-  );
-  for (const tx of pending) {
-    await approvePendingTransaction(tx.id);
+/** All recipient IDs with a persisted data directory on disk (Issue #1075). */
+function listRecipientIds(): string[] {
+  try {
+    return readdirSync(`${getDataDir()}/recipients`, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+  } catch {
+    return [];
   }
-  return { processed: pending.map((t: any) => t.id) };
+}
+
+export async function processPendingTransactions() {
+  const previousRecipientId = currentRecipientId;
+  const now = Date.now();
+  const processed: string[] = [];
+
+  for (const recipientId of listRecipientIds()) {
+    setCurrentRecipient(recipientId);
+    const pending = spendingTracker.transactions.filter(
+      (t: any) =>
+        t.status === 'pending' &&
+        t.pendingUntil &&
+        new Date(t.pendingUntil).getTime() <= now,
+    );
+    for (const tx of pending) {
+      await approvePendingTransaction(tx.id);
+      processed.push(tx.id);
+    }
+  }
+
+  setCurrentRecipient(previousRecipientId);
+  return { processed };
 }
 
 // --- Tool: Pay for medication via MPP Charge (real Stellar payment) ---
@@ -2119,26 +2194,6 @@ export async function payForMedication(
   }
 
   return { success: true, transaction: tx };
-}
-
-// Helper: build, sign, and submit a single USDC payment so payBill can retry on tx_bad_seq
-async function buildAndSubmitUsdcPayment(account: any, recipientKey: string, amount: number): Promise<string> {
-  const usdcAsset = new Asset("USDC", USDC_ISSUER);
-  const stellarTx = new TransactionBuilder(account, {
-    fee: "100",
-    networkPassphrase: Networks.TESTNET,
-  })
-    .addOperation(Operation.payment({ destination: recipientKey, asset: usdcAsset, amount: amount.toFixed(7) }))
-    .setTimeout(30)
-    .build();
-  stellarTx.sign(agentKeypair);
-  const sigHint = stellarTx.signatures[0]?.hint();
-  if (!sigHint || !sigHint.equals(agentKeypair.signatureHint())) {
-    throw new Error(`Signer mismatch: expected ${agentKeypair.publicKey()} — refusing to submit`);
-  }
-  console.log(`  [Stellar] Signer verified: ${agentKeypair.publicKey().slice(0, 8)}...`);
-  const result = await horizonServer.submitTransaction(stellarTx);
-  return (result as any).hash;
 }
 
 // --- Tool: Pay a medical bill via real Stellar USDC transfer ---
@@ -2666,14 +2721,14 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'pay_for_medication',
     description:
-      'Pay a pharmacy for a medication order via MPP Charge on Stellar (real USDC payment). Subject to spending policy limits. Amount must be between $0.01 and $10,000. If the payment is blocked by spending policy, the result includes a budgetContext object { reason, attempted, dailyRemaining, monthlyRemaining, suggestion }: relay it to the caregiver so they can either approve a one-time override or pick a cheaper option within the remaining budget.',
+      `Pay a pharmacy for a medication order via MPP Charge on Stellar (real USDC payment). Subject to spending policy limits. Amount must be between $0.01 and $${MAX_PAYMENT}. If the payment is blocked by spending policy, the result includes a budgetContext object { reason, attempted, dailyRemaining, monthlyRemaining, suggestion }: relay it to the caregiver so they can either approve a one-time override or pick a cheaper option within the remaining budget.`,
     input_schema: strictInputSchema({
       type: 'object' as const,
       properties: {
         pharmacy_id: { type: 'string' },
         pharmacy_name: { type: 'string' },
         drug_name: { type: 'string' },
-        amount: { type: 'number', description: 'Payment amount in USD (min: 0.01, max: 10000)' },
+        amount: { type: 'number', description: `Payment amount in USD (min: 0.01, max: ${MAX_PAYMENT})` },
         days_supply: { type: 'number', description: 'Days supply for adherence tracking (default: 30)' },
         recipient_id: { type: 'string', description: 'Care recipient ID (default: rosa)' },
       },
@@ -2683,14 +2738,14 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'pay_bill',
     description:
-      'Pay a medical bill via direct Stellar USDC transfer. Subject to spending policy limits. If the bill has been audited and errors found, pay only the corrected amount. Amount must be between $0.01 and $10,000.',
+      `Pay a medical bill via direct Stellar USDC transfer. Subject to spending policy limits. If the bill has been audited and errors found, pay only the corrected amount. Amount must be between $0.01 and $${MAX_PAYMENT}.`,
     input_schema: strictInputSchema({
       type: 'object' as const,
       properties: {
         provider_id: { type: 'string' },
         provider_name: { type: 'string' },
         description: { type: 'string' },
-        amount: { type: 'number', description: 'Payment amount in USD (min: 0.01, max: 10000)' },
+        amount: { type: 'number', description: `Payment amount in USD (min: 0.01, max: ${MAX_PAYMENT})` },
         recipient_id: { type: 'string', description: 'Care recipient ID (default: rosa)' },
       },
       required: ['provider_id', 'provider_name', 'description', 'amount'],

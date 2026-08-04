@@ -29,7 +29,7 @@ fix.md
 coverage/
 .nyc_output/
 **/__snapshots__/
-*.snap
+**/*.snap
 test-results/
 playwright-report/
 blob-report/
@@ -40,7 +40,16 @@ playwright/.cache/
 .next/
 out/
 
-# Temporary files
+# Editor / OS noise
+*.iml
+
+# Dependency lock duplicates (keep root lockfiles, ignore nested generated ones)
+**/node_modules/
+
+# Temporary / scratch files
 *.tmp
 *.temp
 *.bak
+ISSUES_*.md
+IMPLEMENTATION_SUMMARY.md
+implementation.md

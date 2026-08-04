@@ -9,14 +9,15 @@ servers:
   - url: 'https://api.careguard.xyz'
     description: 'Production server'
 security:
-  - X402Auth:
+  - CaregiverBearerAuth:
 []
 components:
   securitySchemes:
-    X402Auth:
+    CaregiverBearerAuth:
       type: 'http'
       scheme: 'bearer'
-      description: 'x402 payment protocol. Include X-PAYMENT header with payment proof on protected routes.'
+      bearerFormat: 'token'
+      description: 'Bearer token used to authorize caregiver access to /agent/* endpoints. Set CAREGIVER_TOKEN in environment variables.'
   schemas:
     Error:
       type: 'object'
@@ -27,68 +28,7 @@ components:
           type: 'string'
         details:
           type: 'object'
-    ReadinessResponse:
-      type: 'object'
-      description: 'See docs/observability/health-checks.md for the full schema and check semantics.'
-      properties:
-        status:
-          type: 'string'
-          enum:
-            - 'ok'
-            - 'degraded'
-        checks:
-          type: 'object'
-          properties:
-            env:
-              oneOf:
-                - type: 'boolean'
-                - type: 'string'
-            horizon:
-              type: 'boolean'
-            ozFacilitator:
-              oneOf:
-                - type: 'boolean'
-                - type: 'string'
 paths:
-  /health:
-    get:
-      summary: 'Liveness probe — always fast, no dependency checks'
-      tags:
-        - 'Observability'
-      security:
-[]
-      responses:
-        200:
-          description: 'Process is up'
-          content:
-            application/json:
-              schema:
-                type: 'object'
-                properties:
-                  status:
-                    type: 'string'
-                    enum:
-                      - 'ok'
-  /ready:
-    get:
-      summary: 'Readiness probe — checks required env, Horizon, and OZ facilitator status'
-      tags:
-        - 'Observability'
-      security:
-[]
-      responses:
-        200:
-          description: 'All dependency checks passed'
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ReadinessResponse'
-        503:
-          description: 'Draining, or at least one dependency check failed'
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ReadinessResponse'
   /agent/spending:
     get:
       summary: 'Get agent spending summary'
@@ -106,48 +46,14 @@ paths:
                     type: 'number'
                   categories:
                     type: 'object'
-  /pharmacy/compare:
-    get:
-      summary: 'Compare pharmacy prices for a drug'
+  /pharmacy:
+    post:
+      summary: 'Query pharmacy API'
       tags:
         - 'Pharmacy'
       security:
         - X402Auth:
 []
-      parameters:
-        - in: 'query'
-          name: 'drug'
-          required: true
-          schema:
-            type: 'string'
-            minLength: 1
-            maxLength: 80
-          description: 'Drug name. Maximum length: 80 characters.'
-        - in: 'query'
-          name: 'dosage'
-          required: false
-          schema:
-            type: 'string'
-            minLength: 1
-            maxLength: 80
-          description: 'Optional dosage string. Maximum length: 80 characters.'
-        - in: 'query'
-          name: 'zip'
-          required: false
-          schema:
-            type: 'string'
-            pattern: '^\d{5}$'
-          description: '5-digit ZIP code used for distance adjustments.'
-      responses:
-        200:
-          description: 'Pharmacy query results'
-        400:
-          description: 'Invalid request'
-  /pharmacy/prices:
-    post:
-      summary: 'Admin upsert for a drug price at a pharmacy'
-      tags:
-        - 'Pharmacy'
       requestBody:
         required: true
         content:
@@ -155,28 +61,16 @@ paths:
             schema:
               type: 'object'
               properties:
-                drug:
+                query:
                   type: 'string'
-                  minLength: 1
-                  maxLength: 80
-                pharmacyId:
-                  type: 'string'
-                  minLength: 1
-                  maxLength: 80
-                price:
-                  type: 'number'
-                  exclusiveMinimum: 0
-                  maximum: 10000
               required:
-                - 'drug'
-                - 'pharmacyId'
-                - 'price'
+                - 'query'
       responses:
         200:
-          description: 'Price created or updated'
+          description: 'Pharmacy query results'
         400:
-          description: 'Validation error'
-  /bill/audit:
+          description: 'Invalid request'
+  /bill-audit:
     post:
       summary: 'Audit medical bills'
       tags:
@@ -191,7 +85,7 @@ paths:
             schema:
               type: 'object'
               properties:
-                lineItems:
+                items:
                   type: 'array'
                   items:
                     type: 'object'
@@ -209,14 +103,13 @@ paths:
                       description:
                         type: 'string'
                         minLength: 1
-                        maxLength: 80
                     required:
                       - 'cptCode'
                       - 'quantity'
                       - 'chargedAmount'
                       - 'description'
               required:
-                - 'lineItems'
+                - 'items'
       responses:
         200:
           description: 'Audit results'
@@ -229,65 +122,6 @@ paths:
                 properties:
                   errors:
                     type: 'array'
-  /drug/interactions:
-    get:
-      summary: 'Check drug interactions for a medication list'
-      tags:
-        - 'Drug Interactions'
-      security:
-        - X402Auth:
-[]
-      parameters:
-        - in: 'query'
-          name: 'meds'
-          required: true
-          schema:
-            type: 'string'
-            minLength: 1
-            maxLength: 1619
-          description: 'Comma-separated medication names. Each medication name is limited to 80 characters.'
-      responses:
-        200:
-          description: 'Drug interaction results'
-        400:
-          description: 'Validation error'
-  /pharmacy/order:
-    post:
-      summary: 'Submit a paid pharmacy order'
-      tags:
-        - 'Pharmacy Payments'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: 'object'
-              properties:
-                drug:
-                  type: 'string'
-                  minLength: 1
-                  maxLength: 80
-                pharmacy:
-                  type: 'string'
-                  minLength: 1
-                  maxLength: 80
-                amount:
-                  oneOf:
-                    - type: 'number'
-                      minimum: 0.01
-                      maximum: 10000
-                    - type: 'string'
-              required:
-                - 'drug'
-                - 'pharmacy'
-                - 'amount'
-      responses:
-        200:
-          description: 'Order confirmed'
-        400:
-          description: 'Validation error'
-        402:
-          description: 'Payment required'
   /docs:
     get:
       summary: 'API documentation UI'
