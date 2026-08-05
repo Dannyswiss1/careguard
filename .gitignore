@@ -15,33 +15,38 @@ data/**/*.jsonl
 .DS_Store
 fix.md
 
-# Test snapshots and generated test artefacts
+# ── Generated / temporary / snapshot files ────────────────────────────────
+# k6 load test results and summaries
+load/results/
+load/*.xml
+load/*.html
+load/*.json
+k6-summary*.json
+k6-results*.json
+
+# Vitest snapshots (auto-generated — committed per project convention only if explicit)
 **/__snapshots__/
-**/*.snap
-playwright-report/
-test-results/
-coverage/
-.nyc_output/
 
-# Build artefacts
-dist/
+# Test temp data directories created during chaos/integration tests
+shared/__tests__/test-data-audit/
+shared/__tests__/test-data-audit-chaos/
+shared/__tests__/test-data-*/
+
+# Generated PDF / dispute letter artefacts from local runs
+*.pdf
+generated/
+
+# TypeScript build output and incremental compile cache
 *.tsbuildinfo
+tsconfig.tsbuildinfo
 
-# Editor / OS noise
-.DS_Store
+# OS and editor artefacts
 Thumbs.db
+.vscode/*.log
 *.swp
 *.swo
-.idea/
-*.iml
 
-# Dependency lock duplicates (keep root lockfiles, ignore nested generated ones)
-**/node_modules/
-
-# Temporary / scratch files
-*.tmp
-*.bak
-fix.md
-ISSUES_*.md
-IMPLEMENTATION_SUMMARY.md
-implementation.md
+# Heap / CPU profiles generated during load testing
+*.heapprofile
+*.cpuprofile
+*.heapsnapshot
