@@ -402,6 +402,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<RunAgentResult> {
 
     if (runToolCalls + message.tool_calls.length > maxToolCallsPerRun) {
       truncated = true;
+      events.push({ kind: "tool_call_cap_reached" });
       appendAuditEntry({
         event: "agent.tool_cap_exceeded",
         actor: "agent",
