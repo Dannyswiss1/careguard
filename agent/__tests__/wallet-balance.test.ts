@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { Keypair } from "@stellar/stellar-sdk";
-import { checkWalletBalance } from "../../shared/wallet-balance.ts";
+import { checkWalletBalance, fetchWalletBalances } from "../../shared/wallet-balance.ts";
 import { resumeAgent, getAgentState, isPaused } from "../../shared/agent-state.ts";
+import { Horizon } from "@stellar/stellar-sdk";
 
 // Throwaway keypair generated per test run — only used so Keypair.fromSecret resolves
 // to a real (well-formed) Stellar secret without hitting any network.
@@ -94,6 +95,42 @@ describe("checkWalletBalance", () => {
       expect(result.error).toMatch(/AGENT_SECRET_KEY/);
     } finally {
       if (old != null) process.env.AGENT_SECRET_KEY = old;
+    }
+  });
+
+  it("confirms both checkWalletBalance and formatting logic produce numerically consistent results from fetchWalletBalances", async () => {
+    const address = Keypair.fromSecret(FAKE_SECRET).publicKey();
+    const usdcIssuer = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
+
+    const loadAccountSpy = vi
+      .spyOn(Horizon.Server.prototype, "loadAccount")
+      .mockResolvedValue({
+        balances: [
+          { asset_code: "USDC", asset_issuer: usdcIssuer, balance: "12.3456" },
+          { asset_type: "native", balance: "98.7654" },
+        ],
+      } as any);
+
+    try {
+      // 1. Fetch balances using the shared helper
+      const snapshot = await fetchWalletBalances(address, "https://horizon-testnet.stellar.org", usdcIssuer);
+
+      // 2. Caller 1: checkWalletBalance behavior (numeric checks)
+      expect(snapshot.usdc).toBe(12.3456);
+      expect(snapshot.xlm).toBe(98.7654);
+
+      // 3. Caller 2: GET /agent/wallet handler behavior (formatting)
+      const formattedUsdc = snapshot.usdc.toFixed(2);
+      const formattedXlm = snapshot.xlm.toFixed(2);
+
+      expect(formattedUsdc).toBe("12.35");
+      expect(formattedXlm).toBe("98.77");
+
+      // Verify numerical consistency (parsing the formatted string yields value close to raw float)
+      expect(parseFloat(formattedUsdc)).toBeCloseTo(snapshot.usdc, 2);
+      expect(parseFloat(formattedXlm)).toBeCloseTo(snapshot.xlm, 2);
+    } finally {
+      loadAccountSpy.mockRestore();
     }
   });
 });

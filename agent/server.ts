@@ -50,6 +50,7 @@ import { resolveStellarNetwork, validateSignerKeyForNetwork } from "../shared/st
 import { verifyWebhook } from "../shared/verify-webhook.ts";
 import { executeTool, runAgent, buildSystemPrompt } from "./runner.ts";
 import { requireApiKey } from "../shared/auth.ts";
+import { fetchWalletBalances } from "../shared/wallet-balance.ts";
 
 const PORT = parseInt(process.env.AGENT_PORT || "3004", 10);
 
@@ -228,12 +229,10 @@ app.get("/agent/wallet", async (req, res) => {
     return res.json(cached.data);
   }
   try {
-    const account = await horizonServer.loadAccount(address);
-    const usdc = account.balances.find((b: any) => b.asset_code === "USDC" && b.asset_issuer === process.env.USDC_ISSUER);
-    const xlm = account.balances.find((b: any) => b.asset_type === "native");
+    const balances = await fetchWalletBalances(address, STELLAR_CONFIG.horizonUrl, process.env.USDC_ISSUER || "");
     const data = {
-      usdc: usdc ? parseFloat((usdc as any).balance).toFixed(2) : "0.00",
-      xlm: xlm ? parseFloat((xlm as any).balance).toFixed(2) : "0.00",
+      usdc: balances.usdc.toFixed(2),
+      xlm: balances.xlm.toFixed(2),
       address,
     };
     walletCache.set(address, { data, expiresAt: now + WALLET_CACHE_TTL_MS });
