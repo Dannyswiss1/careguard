@@ -57,7 +57,7 @@ export function getThresholds(opts?: WalletCheckOptions): { usdc: number; xlm: n
   };
 }
 
-async function defaultLoadBalances(address: string, horizonUrl: string, usdcIssuer: string): Promise<BalanceSnapshot> {
+export async function fetchWalletBalances(address: string, horizonUrl: string, usdcIssuer: string): Promise<BalanceSnapshot> {
   const server = new Horizon.Server(horizonUrl);
   const account = await server.loadAccount(address);
   const usdcEntry = account.balances.find(
@@ -70,6 +70,7 @@ async function defaultLoadBalances(address: string, horizonUrl: string, usdcIssu
     xlm: xlmEntry ? parseFloat((xlmEntry as any).balance) : 0,
   };
 }
+
 
 export async function checkWalletBalance(opts: WalletCheckOptions = {}): Promise<WalletCheckResult> {
   const secret = opts.agentSecretKey ?? process.env.AGENT_SECRET_KEY;
@@ -88,7 +89,7 @@ export async function checkWalletBalance(opts: WalletCheckOptions = {}): Promise
   const usdcIssuer = opts.usdcIssuer ?? DEFAULT_USDC_ISSUER;
   const thresholds = getThresholds(opts);
   const loadBalances =
-    opts.loadBalances ?? ((addr: string) => defaultLoadBalances(addr, horizonUrl, usdcIssuer));
+    opts.loadBalances ?? ((addr: string) => fetchWalletBalances(addr, horizonUrl, usdcIssuer));
 
   let snapshot: BalanceSnapshot;
   try {

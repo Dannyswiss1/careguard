@@ -27,7 +27,7 @@ import {
   metricsHandler,
   agentRunsTotal,
 } from "../shared/metrics.ts";
-import { redactPII, hashTask } from "../shared/redact.ts";
+import { redactPII, hashTask, registerKnownNames } from "../shared/redact.ts";
 import {
   getSpendingSummary,
   getWalletBalance,
@@ -50,6 +50,7 @@ import { resolveStellarNetwork, validateSignerKeyForNetwork } from "../shared/st
 import { verifyWebhook } from "../shared/verify-webhook.ts";
 import { executeTool, runAgent, buildSystemPrompt } from "./runner.ts";
 import { requireApiKey } from "../shared/auth.ts";
+import { fetchWalletBalances } from "../shared/wallet-balance.ts";
 
 const PORT = parseInt(process.env.AGENT_PORT || "3004", 10);
 
@@ -228,12 +229,10 @@ app.get("/agent/wallet", async (req, res) => {
     return res.json(cached.data);
   }
   try {
-    const account = await horizonServer.loadAccount(address);
-    const usdc = account.balances.find((b: any) => b.asset_code === "USDC" && b.asset_issuer === process.env.USDC_ISSUER);
-    const xlm = account.balances.find((b: any) => b.asset_type === "native");
+    const balances = await fetchWalletBalances(address, STELLAR_CONFIG.horizonUrl, process.env.USDC_ISSUER || "");
     const data = {
-      usdc: usdc ? parseFloat((usdc as any).balance).toFixed(2) : "0.00",
-      xlm: xlm ? parseFloat((xlm as any).balance).toFixed(2) : "0.00",
+      usdc: balances.usdc.toFixed(2),
+      xlm: balances.xlm.toFixed(2),
       address,
     };
     walletCache.set(address, { data, expiresAt: now + WALLET_CACHE_TTL_MS });
@@ -493,6 +492,8 @@ let recipientProfiles: Record<string, RecipientProfile> = {};
 for (const [id, profile] of Object.entries(DEFAULT_RECIPIENTS)) {
   recipientProfiles[id] = { ...profile, medications: [...profile.medications] };
 }
+registerKnownNames([caregiverProfile.name]);
+registerKnownNames(Object.values(recipientProfiles).map((p) => p.name));
 
 app.get("/agent/recipients", (_req, res) => {
   res.json({ recipients: Object.keys(recipientProfiles), profiles: recipientProfiles });
@@ -504,7 +505,10 @@ app.put("/agent/recipients/:recipientId", (req, res) => {
   if (!recipientProfiles[recipientId]) {
     recipientProfiles[recipientId] = { ...DEFAULT_RECIPIENTS.rosa, name: recipientId, medications: [] };
   }
-  if (name) recipientProfiles[recipientId].name = name;
+  if (name) {
+    recipientProfiles[recipientId].name = name;
+    registerKnownNames([name]);
+  }
   if (typeof age === "number") recipientProfiles[recipientId].age = age;
   if (Array.isArray(medications)) recipientProfiles[recipientId].medications = medications;
   if (doctor) recipientProfiles[recipientId].doctor = doctor;
@@ -528,12 +532,18 @@ app.patch("/agent/profile", (req, res) => {
       recipientProfiles[recipientId] = { ...DEFAULT_RECIPIENTS.rosa, name: recipientId, medications: [] };
     }
     recipientProfiles[recipientId] = { ...recipientProfiles[recipientId], ...recipient };
+    if (recipient.name) {
+      registerKnownNames([recipient.name]);
+    }
     if (Array.isArray(recipient.medications)) {
       recipientProfiles[recipientId].medications = recipient.medications;
     }
   }
   if (caregiver && typeof caregiver === "object") {
     Object.assign(caregiverProfile, caregiver);
+    if (caregiver.name) {
+      registerKnownNames([caregiver.name]);
+    }
   }
   res.json({ recipient: recipientProfiles[recipientId], caregiver: caregiverProfile });
 });
