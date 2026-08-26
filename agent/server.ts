@@ -27,7 +27,7 @@ import {
   metricsHandler,
   agentRunsTotal,
 } from "../shared/metrics.ts";
-import { redactPII, hashTask } from "../shared/redact.ts";
+import { redactPII, hashTask, registerKnownNames } from "../shared/redact.ts";
 import {
   getSpendingSummary,
   getWalletBalance,
@@ -493,6 +493,8 @@ let recipientProfiles: Record<string, RecipientProfile> = {};
 for (const [id, profile] of Object.entries(DEFAULT_RECIPIENTS)) {
   recipientProfiles[id] = { ...profile, medications: [...profile.medications] };
 }
+registerKnownNames([caregiverProfile.name]);
+registerKnownNames(Object.values(recipientProfiles).map((p) => p.name));
 
 app.get("/agent/recipients", (_req, res) => {
   res.json({ recipients: Object.keys(recipientProfiles), profiles: recipientProfiles });
@@ -504,7 +506,10 @@ app.put("/agent/recipients/:recipientId", (req, res) => {
   if (!recipientProfiles[recipientId]) {
     recipientProfiles[recipientId] = { ...DEFAULT_RECIPIENTS.rosa, name: recipientId, medications: [] };
   }
-  if (name) recipientProfiles[recipientId].name = name;
+  if (name) {
+    recipientProfiles[recipientId].name = name;
+    registerKnownNames([name]);
+  }
   if (typeof age === "number") recipientProfiles[recipientId].age = age;
   if (Array.isArray(medications)) recipientProfiles[recipientId].medications = medications;
   if (doctor) recipientProfiles[recipientId].doctor = doctor;
@@ -528,12 +533,18 @@ app.patch("/agent/profile", (req, res) => {
       recipientProfiles[recipientId] = { ...DEFAULT_RECIPIENTS.rosa, name: recipientId, medications: [] };
     }
     recipientProfiles[recipientId] = { ...recipientProfiles[recipientId], ...recipient };
+    if (recipient.name) {
+      registerKnownNames([recipient.name]);
+    }
     if (Array.isArray(recipient.medications)) {
       recipientProfiles[recipientId].medications = recipient.medications;
     }
   }
   if (caregiver && typeof caregiver === "object") {
     Object.assign(caregiverProfile, caregiver);
+    if (caregiver.name) {
+      registerKnownNames([caregiver.name]);
+    }
   }
   res.json({ recipient: recipientProfiles[recipientId], caregiver: caregiverProfile });
 });

@@ -36,6 +36,7 @@ import {
   validateBillAuditRequest,
 } from "./shared/bill-audit.ts";
 import { sanitizeUserString } from "./shared/sanitize.ts";
+import { registerKnownNames } from "./shared/redact.ts";
 
 // Sentry (gated by SENTRY_DSN)
 import { initSentry } from "./shared/sentry.ts";
@@ -337,12 +338,18 @@ app.patch("/agent/profile", (req, res) => {
   const { recipient, caregiver } = req.body ?? {};
   if (recipient && typeof recipient === "object") {
     _profileData.recipient = { ..._profileData.recipient, ...recipient };
+    if (recipient.name) {
+      registerKnownNames([recipient.name]);
+    }
     if (Array.isArray(recipient.medications)) {
       _profileData.recipient.medications = recipient.medications;
     }
   }
   if (caregiver && typeof caregiver === "object") {
     _profileData.caregiver = { ..._profileData.caregiver, ...caregiver };
+    if (caregiver.name) {
+      registerKnownNames([caregiver.name]);
+    }
   }
   res.json(_profileData);
 });
@@ -354,6 +361,15 @@ app.patch("/agent/profile", (req, res) => {
 const PHARMACY_ADMIN_TOKEN = process.env.PHARMACY_ADMIN_TOKEN || CAREGIVER_TOKEN;
 const pharmacyStore = createPharmacyPricingStore();
 const recipientsStore = createCareRecipientsStore();
+
+// Register default names and database names on server startup
+registerKnownNames([_profileData.recipient.name, _profileData.caregiver.name]);
+try {
+  const dbRecipients = recipientsStore.list();
+  registerKnownNames(dbRecipients.map((r) => r.name));
+} catch (e) {
+  // Ignore errors if DB is empty or not seeded yet
+}
 
 const requirePharmacyAdmin = createPharmacyAdminAuth(PHARMACY_ADMIN_TOKEN);
 
