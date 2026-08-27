@@ -51,8 +51,7 @@ import { registerKnownNames } from "./shared/redact.ts";
 import { initSentry } from "./shared/sentry.ts";
 
 // Observability
-import { requestContextMiddleware } from "./shared/request-context.ts";
-import { requestLoggerMiddleware } from "./shared/request-logger.ts";
+import { requestLifecycleMiddleware } from "./shared/request-lifecycle.ts";
 import { gracefulShutdown } from "./shared/graceful-shutdown.ts";
 import {
   metricsHandler,
@@ -70,7 +69,7 @@ import {
   isPaused,
   type PauseReason,
 } from "./shared/agent-state.ts";
-import { checkWalletBalance, formatResult } from "./shared/wallet-balance.ts";
+import { checkWalletBalance, formatResult, fetchWalletBalances } from "./shared/wallet-balance.ts";
 import { appendAuditEntry, auditRouter } from "./shared/audit-log.ts";
 import {
   rateLimiters,
@@ -283,8 +282,7 @@ app.use((req, res, next) =>
     next,
   ),
 );
-app.use(requestContextMiddleware());
-app.use(requestLoggerMiddleware());
+app.use(requestLifecycleMiddleware());
 app.use("/agent", requireApiKey);
 app.use("/agent/audit", auditRouter);
 
@@ -1213,7 +1211,11 @@ export async function bootAccountCheck(
   timeoutMs: number = 10000,
 ): Promise<{ success: boolean; usdcBalance: string }> {
   try {
-    const accountPromise = serverInstance.loadAccount(publicKey);
+    const fetchPromise = fetchWalletBalances(
+      publicKey,
+      STELLAR_CONFIG.horizonUrl,
+      env.data.USDC_ISSUER || "",
+    );
     const timeoutPromise = new Promise<never>((_, reject) =>
       setTimeout(
         () => reject(new Error("Horizon loadAccount timeout (10s)")),
@@ -1221,9 +1223,8 @@ export async function bootAccountCheck(
       ),
     );
 
-    const acc: any = await Promise.race([accountPromise, timeoutPromise]);
-    const usdc = acc.balances.find((b: any) => b.asset_code === "USDC");
-    const usdcBalance = usdc?.balance || "0";
+    const balances = await Promise.race([fetchPromise, timeoutPromise]);
+    const usdcBalance = balances.usdc.toFixed(2);
     isDegradedMode = false;
     return { success: true, usdcBalance };
   } catch (err: any) {

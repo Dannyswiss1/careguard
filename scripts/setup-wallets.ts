@@ -14,6 +14,7 @@ import { generateMnemonic, mnemonicToSeedSync, validateMnemonic } from "@scure/b
 import { wordlist as englishWordlist } from "@scure/bip39/wordlists/english";
 import { logger } from "../shared/logger.ts";
 import { getTargetFee } from "../shared/stellar-fee.ts";
+import { fetchWalletBalances } from "../shared/wallet-balance.ts";
 
 const HORIZON_URL = "https://horizon-testnet.stellar.org";
 const FRIENDBOT_URL = "https://friendbot.stellar.org";
@@ -171,14 +172,13 @@ export async function verifyFundedBalance(
   publicKey: string,
   horizonServer: Horizon.Server = new Horizon.Server(HORIZON_URL),
 ): Promise<void> {
-  const account = await horizonServer.loadAccount(publicKey);
-  const xlm = account.balances.find((b: any) => b.asset_type === "native");
-  if (!xlm || parseFloat(xlm.balance) <= 0) {
+  const balances = await fetchWalletBalances(publicKey, HORIZON_URL, USDC_ISSUER);
+  if (balances.xlm <= 0) {
     throw new Error(
-      `Balance verification failed for ${publicKey}: XLM balance is ${xlm?.balance ?? "missing"}`,
+      `Balance verification failed for ${publicKey}: XLM balance is 0`,
     );
   }
-  logger.info({ wallet: publicKey.slice(0, 8), xlm: xlm.balance }, "XLM balance verified");
+  logger.info({ wallet: publicKey.slice(0, 8), xlm: balances.xlm }, "XLM balance verified");
 }
 
 export async function fundAccountWithRetry(
@@ -271,11 +271,8 @@ async function addUsdcTrustline(keypair: Keypair, maxRetries = 1): Promise<void>
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const account = await server.loadAccount(publicKey);
-
-      const hasTrustline = account.balances.some(
-        (b: any) => b.asset_code === "USDC" && b.asset_issuer === USDC_ISSUER
-      );
+      const balances = await fetchWalletBalances(publicKey, HORIZON_URL, USDC_ISSUER);
+      const hasTrustline = Boolean(balances.hasUsdcTrustline);
 
       if (hasTrustline) {
         logger.info({ wallet: publicKey.slice(0, 8) }, "USDC trustline already exists");
@@ -283,6 +280,7 @@ async function addUsdcTrustline(keypair: Keypair, maxRetries = 1): Promise<void>
       }
 
       const targetFee = await getTargetFee(server);
+      const account = await server.loadAccount(publicKey);
 
       const tx = new TransactionBuilder(account, {
         fee: targetFee,
