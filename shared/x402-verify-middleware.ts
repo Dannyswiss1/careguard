@@ -5,7 +5,7 @@
  * service endpoints. Extracted from x402-middleware.ts to decouple verification
  * concerns from signing operations used by the agent.
  *
- * Used by: services/*/server.ts (payment verification middleware)
+ * Used by: services/ (payment verification middleware)
  *
  * Protocol version changes must stay synchronized with x402-signer.ts.
  */

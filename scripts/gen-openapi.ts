@@ -193,6 +193,12 @@ export function generateSpec(): OpenAPISpec {
           description:
             "Bearer token used to authorize caregiver access to /agent/* endpoints. Set CAREGIVER_TOKEN in environment variables.",
         },
+        X402Auth: {
+          type: "apiKey",
+          name: "X-Payment",
+          in: "header",
+          description: "x402 payment proof header for paid endpoints on Stellar.",
+        },
       },
       schemas: {
         Error: {
@@ -376,9 +382,8 @@ export function generateSpec(): OpenAPISpec {
                 },
               },
             },
-            "401": { $ref: "#/components/responses/UnauthorizedError" },
-            "403": { $ref: "#/components/responses/ForbiddenError" },
-            "500": { $ref: "#/components/responses/InternalServerError" },
+            "401": errorResponse("Missing or invalid CAREGIVER_TOKEN."),
+            "403": errorResponse("Caregiver token invalid or insufficient access."),
             "429": RATE_LIMIT_RESPONSE,
             "500": SERVER_ERROR_RESPONSE,
           },
@@ -440,6 +445,8 @@ export function generateSpec(): OpenAPISpec {
       "/pharmacy/prices": {
         post: {
           summary: "Admin upsert for a drug price at a pharmacy",
+          description:
+            "Admin-only endpoint to create or update a drug price at a pharmacy. See docs/api-examples/pharmacy-prices-admin.md for detailed authorization rules, sample payloads, and effects on future comparison results.",
           tags: ["Pharmacy"],
           requestBody: {
             required: true,
@@ -472,15 +479,6 @@ export function generateSpec(): OpenAPISpec {
           responses: {
             "200": {
               description: "Price created or updated",
-            },
-            "400": {
-              $ref: "#/components/responses/BadRequestError",
-            },
-            "401": {
-              $ref: "#/components/responses/UnauthorizedError",
-            },
-            "403": {
-              $ref: "#/components/responses/ForbiddenError",
             },
             "400": errorResponse(
               "Validation error. `code` is one of VALIDATION_MISSING_FIELD, VALIDATION_INVALID_INPUT.",
@@ -539,23 +537,6 @@ export function generateSpec(): OpenAPISpec {
             "200": {
               description: "Audit results",
             },
-            "400": {
-              $ref: "#/components/responses/BadRequestError",
-            },
-            "402": {
-              $ref: "#/components/responses/PaymentRequiredError",
-              description: "Validation error. `code` is one of VALIDATION_MISSING_FIELD, VALIDATION_INVALID_INPUT.",
-              content: {
-                "application/json": {
-                  schema: {
-                    type: "object",
-                    properties: {
-                      errors: { type: "array" },
-                    },
-                  },
-                },
-              },
-            },
             "402": paymentRequiredResponse(),
             "413": bodyTooLargeResponse(),
             "429": RATE_LIMIT_RESPONSE,
@@ -585,12 +566,6 @@ export function generateSpec(): OpenAPISpec {
           responses: {
             "200": {
               description: "Drug interaction results",
-            },
-            "400": {
-              $ref: "#/components/responses/BadRequestError",
-            },
-            "402": {
-              $ref: "#/components/responses/PaymentRequiredError",
             },
             "400": errorResponse(
               "Validation error. `code` is one of VALIDATION_MISSING_FIELD, VALIDATION_INVALID_INPUT, VALIDATION_INSUFFICIENT_SCORE.",
@@ -637,12 +612,6 @@ export function generateSpec(): OpenAPISpec {
           responses: {
             "200": {
               description: "Order confirmed",
-            },
-            "400": {
-              $ref: "#/components/responses/BadRequestError",
-            },
-            "402": {
-              $ref: "#/components/responses/PaymentRequiredError",
             },
             "400": errorResponse(
               "Validation error. `code` is one of VALIDATION_MISSING_FIELD, VALIDATION_INVALID_INPUT.",
