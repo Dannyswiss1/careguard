@@ -15,7 +15,11 @@ const BLOCKLIST = [
 
 const CONTROL_CHAR_RE = /[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]/g;
 
-const taskSchema = z.string().min(10).max(5000);
+export const TaskInputSchema = z
+  .string()
+  .min(10)
+  .max(5000)
+  .transform((str) => str.replace(CONTROL_CHAR_RE, ""));
 
 let suspiciousTaskTotal = 0;
 export function getSuspiciousTaskCount(): number {
@@ -30,16 +34,13 @@ export interface TaskValidationResult {
 }
 
 export function validateTask(raw: unknown): TaskValidationResult {
-  const parsed = taskSchema.safeParse(raw);
+  const parsed = TaskInputSchema.safeParse(raw);
   if (!parsed.success) {
     return { ok: false, error: parsed.error.errors[0].message, suspicious: false };
   }
 
-  const stripped = parsed.data.replace(CONTROL_CHAR_RE, "");
+  const stripped = parsed.data;
 
-  // Hard-reject if task is valid JSON containing a "role" key — natural-language
-  // tasks never parse as JSON. This resists Unicode/whitespace bypass that simple
-  // string matching on `"role": "system"` cannot handle.
   try {
     const asJson = JSON.parse(stripped);
     if (asJson && typeof asJson === "object" && "role" in asJson) {
