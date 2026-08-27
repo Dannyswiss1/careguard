@@ -1010,7 +1010,7 @@ function getBudgetMutex(recipientId: string): AsyncMutex {
   return m;
 }
 
-// Per-keypair mutex to serialize Stellar submissions (Issue #XXX).
+// Per-keypair mutex to serialize Stellar submissions.
 // Prevents concurrent payBill calls from loading the same sequence number.
 const _submissionMutexes = new Map<string, AsyncMutex>();
 function getSubmissionMutex(keypairId: string): AsyncMutex {
@@ -2284,7 +2284,7 @@ export async function payBill(
     releaseBill();
   }
 
-  // Execute real Stellar USDC transfer (serialised per-keypair to avoid sequence races — Issue #XXX)
+  // Execute real Stellar USDC transfer (serialised per-keypair to avoid sequence races)
   const recipientKey = process.env.BILL_PROVIDER_PUBLIC_KEY;
   if (!recipientKey) {
     spendingTracker.bills -= amount; // roll back reservation
