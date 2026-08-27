@@ -310,4 +310,126 @@ In alignment with CareGuard's degraded resilience design (see [`docs/runbooks/re
 3. **Rollback Path**:
    - If Redis issues occur in production, setting `AGENT_QUEUE_REDIS_ENABLED=false` immediately reverts execution to the in-memory queue fallback without requiring code redeployments.
 
+---
+
+# RFC: Shared Error-Response Envelope Across All Services (Issue #1442)
+
+## Executive Summary
+
+This RFC addresses issue #1442 by proposing a standardized, shared error-response envelope across all 6 CareGuard server entrypoints: [`server.ts`](file:///c:/Users/PAB-NETWORK/Documents/Grantfox/careguard/server.ts), [`agent/server.ts`](file:///c:/Users/PAB-NETWORK/Documents/Grantfox/careguard/agent/server.ts), [`services/pharmacy-api/server.ts`](file:///c:/Users/PAB-NETWORK/Documents/Grantfox/careguard/services/pharmacy-api/server.ts), [`services/bill-audit-api/server.ts`](file:///c:/Users/PAB-NETWORK/Documents/Grantfox/careguard/services/bill-audit-api/server.ts), [`services/drug-interaction-api/server.ts`](file:///c:/Users/PAB-NETWORK/Documents/Grantfox/careguard/services/drug-interaction-api/server.ts), and [`services/pharmacy-payment/server.ts`](file:///c:/Users/PAB-NETWORK/Documents/Grantfox/careguard/services/pharmacy-payment/server.ts).
+
+Currently, each server formats ad-hoc error JSON objects (e.g. `{ error: string }`, `{ message: string }`, or `{ issues: ZodIssue[] }`), forcing clients like [`dashboard/src/hooks/use-agent-state.ts`](file:///c:/Users/PAB-NETWORK/Documents/Grantfox/careguard/dashboard/src/hooks/use-agent-state.ts) to write brittle, multi-case parsing logic.
+
+This proposal introduces a unified `ApiErrorResponse` type in [`shared/types.ts`](file:///c:/Users/PAB-NETWORK/Documents/Grantfox/careguard/shared/types.ts) and a central Express `errorHandler` middleware.
+
+---
+
+## 1. Survey of Current Error Shapes Across Server Entrypoints
+
+An audit of error responses across all 6 entrypoints revealed significant fragmentation:
+
+| Server Entrypoint | Current Error Shape(s) | Example Trigger Context |
+|---|---|---|
+| [`server.ts`](file:///c:/Users/PAB-NETWORK/Documents/Grantfox/careguard/server.ts) | `{ error: string }`, `{ error: string, limit: number }` | Body size limits, agent validation |
+| [`agent/server.ts`](file:///c:/Users/PAB-NETWORK/Documents/Grantfox/careguard/agent/server.ts) | `{ error: string }`, `{ error: string, issues: ZodIssue[] }` | Zod policy validation, rate limits, spending policy block |
+| [`services/pharmacy-api`](file:///c:/Users/PAB-NETWORK/Documents/Grantfox/careguard/services/pharmacy-api/server.ts) | `{ error: string }`, `{ message: string }` | Unknown drug, missing query param |
+| [`services/bill-audit-api`](file:///c:/Users/PAB-NETWORK/Documents/Grantfox/careguard/services/bill-audit-api/server.ts) | `{ error: string }`, `{ details: string[] }` | Bill line-item audit validation failure |
+| [`services/drug-interaction-api`](file:///c:/Users/PAB-NETWORK/Documents/Grantfox/careguard/services/drug-interaction-api/server.ts) | `{ error: string }` | Invalid drug query parameters |
+| [`services/pharmacy-payment`](file:///c:/Users/PAB-NETWORK/Documents/Grantfox/careguard/services/pharmacy-payment/server.ts) | `{ error: string }`, `{ status: "rejected", error: string }` | Payment failure, stock unavailable |
+
+---
+
+## 2. Standardized `ApiErrorResponse` Type Definition
+
+Defined in [`shared/types.ts`](file:///c:/Users/PAB-NETWORK/Documents/Grantfox/careguard/shared/types.ts):
+
+```typescript
+export const ApiErrorResponseSchema = z.object({
+  /** Human-readable error summary. */
+  error: z.string(),
+  /** Machine-readable error code enum. */
+  code: z.string(),
+  /** HTTP status code matching response header. */
+  statusCode: z.number().int(),
+  /** ISO 8601 timestamp of failure. */
+  timestamp: z.string(),
+  /** Optional domain-specific error details (e.g. Zod issues or policy breakdown). */
+  details: z.record(z.string(), z.unknown()).optional(),
+  /** Correlation ID for log tracing. */
+  requestId: z.string().optional(),
+});
+
+export type ApiErrorResponse = z.infer<typeof ApiErrorResponseSchema>;
+```
+
+---
+
+## 3. Shared `errorHandler` Express Middleware
+
+Created in `shared/error-handler.ts`:
+
+```typescript
+import type { Request, Response, NextFunction, ErrorRequestHandler } from "express";
+import { logger } from "./logger.ts";
+import type { ApiErrorResponse } from "./types.ts";
+
+export class AppError extends Error {
+  constructor(
+    public override message: string,
+    public statusCode: number = 500,
+    public code: string = "INTERNAL_ERROR",
+    public details?: Record<string, unknown>,
+  ) {
+    super(message);
+    this.name = "AppError";
+  }
+}
+
+export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
+  const statusCode = err.statusCode || err.status || 500;
+  const code = err.code || (statusCode === 429 ? "RATE_LIMIT_EXCEEDED" : "SERVER_ERROR");
+
+  const responsePayload: ApiErrorResponse = {
+    error: err.message || "An unexpected error occurred",
+    code,
+    statusCode,
+    timestamp: new Date().toISOString(),
+    details: err.details || (err.issues ? { issues: err.issues } : undefined),
+    requestId: (req.headers["x-request-id"] as string) || undefined,
+  };
+
+  logger.error({ err, path: req.path, statusCode }, "request error");
+  res.status(statusCode).json(responsePayload);
+};
+```
+
+---
+
+## 4. Domain-Specific Error Code Mappings
+
+To maintain domain clarity, specific operational errors map onto structured error codes:
+
+| Operational Context | HTTP Status | Error Code (`code`) | Details Payload |
+|---|---|---|---|
+| Spending Policy Violation | `400` / `403` | `SPENDING_POLICY_BLOCKED` | `{ dailyLimit, requestedAmount, category }` |
+| Queue Full | `429` | `AGENT_QUEUE_FULL` | `{ retryAfter: 10 }` |
+| Bill Validation Error | `400` | `BILL_AUDIT_INVALID` | `{ invalidItems: [...] }` |
+| Drug Interaction Warning | `400` | `DRUG_INTERACTION_SEVERE` | `{ drugs: [...] }` |
+| Rate Limit Hit | `429` | `RATE_LIMIT_EXCEEDED` | `{ limit: 100, windowMs: 60000 }` |
+
+---
+
+## 5. Migration Strategy & Client Backward Compatibility Window
+
+To avoid breaking existing consumers (such as [`dashboard/src/hooks/use-agent-state.ts`](file:///c:/Users/PAB-NETWORK/Documents/Grantfox/careguard/dashboard/src/hooks/use-agent-state.ts)):
+
+1. **Envelope Normalizer Helper in Dashboard**:
+   - `dashboard` clients parse error payloads using a dual-reader helper that checks for `response.error` first, maintaining 100% compatibility during rollout.
+2. **Server Deployment Order**:
+   - Deploy `shared/error-handler.ts` to microservices behind a `UNIFIED_ERROR_ENVELOPE_ENABLED` feature flag.
+3. **Time and Space Complexity**:
+   - **Time Complexity**: $\mathcal{O}(1)$ error object allocation during exception handling.
+   - **Space Complexity**: $\mathcal{O}(1)$ auxiliary memory per error response.
+
+
 
