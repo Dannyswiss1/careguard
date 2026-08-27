@@ -19,7 +19,7 @@ import { WalletTab } from "../components/tabs/wallet-tab";
 import { DASHBOARD_TABS, type Tab } from "../components/types";
 import { useAgentState } from "../hooks/use-agent-state";
 import { useProfile } from "../lib/useProfile";
-import { useRecipients } from "../lib/useRecipients";
+import { useRecipients } from "../lib/use-recipients";
 import { ConfigErrorPage } from "../components/config-error-page";
 import { AGENT_URL } from "../lib/agent-url";
 

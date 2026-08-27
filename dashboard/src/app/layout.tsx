@@ -1,7 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
-import { fetchProfile } from "../lib/fetchProfile";
+import { fetchProfile } from "../lib/fetch-profile";
 import { DEFAULT_LOCALE, type Locale } from "../i18n";
 
 export async function generateMetadata(): Promise<Metadata> {

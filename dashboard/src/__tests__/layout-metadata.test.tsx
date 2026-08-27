@@ -22,7 +22,7 @@ vi.mock("../lib/useProfile", () => ({
   useProfile: () => mockProfile,
 }));
 
-vi.mock("../lib/fetchProfile", () => ({
+vi.mock("../lib/fetch-profile", () => ({
   fetchProfile: async () => mockProfile,
 }));
 
