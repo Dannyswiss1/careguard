@@ -23,6 +23,7 @@ export interface BalanceSnapshot {
   usdc: number;
   xlm: number;
   address: string;
+  hasUsdcTrustline?: boolean;
 }
 
 export interface WalletCheckResult {
@@ -68,6 +69,7 @@ export async function fetchWalletBalances(address: string, horizonUrl: string, u
     address,
     usdc: usdcEntry ? parseFloat((usdcEntry as any).balance) : 0,
     xlm: xlmEntry ? parseFloat((xlmEntry as any).balance) : 0,
+    hasUsdcTrustline: Boolean(usdcEntry),
   };
 }
 

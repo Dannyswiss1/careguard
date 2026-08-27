@@ -44,6 +44,7 @@ import {
   resolveStellarNetwork,
   validateSignerKeyForNetwork,
 } from "../shared/stellar-network.ts";
+import { fetchWalletBalances } from "../shared/wallet-balance.ts";
 import {
   BillAuditValidationError,
   validateLineItems,
@@ -2553,35 +2554,23 @@ export async function getWalletBalance() {
   logger.info({ address }, "[Horizon] fetching wallet balance");
 
   try {
-    const account = await horizonServer.loadAccount(address);
-
-    const usdcBalance = account.balances.find(
-      (b: any) => b.asset_code === "USDC" && b.asset_issuer === USDC_ISSUER,
-    );
-
-    const xlmBalance = account.balances.find(
-      (b: any) => b.asset_type === "native",
-    );
+    const balances = await fetchWalletBalances(address, HORIZON_URL, USDC_ISSUER);
 
     return {
       address,
       balances: {
-        usdc: usdcBalance
-          ? parseFloat((usdcBalance as any).balance).toFixed(2)
-          : "0.00",
-        xlm: xlmBalance
-          ? parseFloat((xlmBalance as any).balance).toFixed(2)
-          : "0.00",
+        usdc: balances.usdc.toFixed(2),
+        xlm: balances.xlm.toFixed(2),
       },
-      usdcTrustlineMissing: !usdcBalance,
+      usdcTrustlineMissing: balances.usdc === 0,
       timestamp: new Date().toISOString(),
     };
   } catch (err: any) {
     logger.error(
       { err: err.message, address },
-      "[Horizon] failed to fetch balance",
+      "[Horizon] failed to fetch wallet balance",
     );
-    throw new Error(`Failed to fetch wallet balance: ${err.message}`);
+    throw err;
   }
 }
 

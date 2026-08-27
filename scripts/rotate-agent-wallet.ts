@@ -54,22 +54,16 @@ async function main() {
   console.log(`Mode:        ${EXECUTE ? "EXECUTE (broadcasting)" : "DRY RUN (no transactions)"}`);
   console.log("");
 
-  // Load old account state
-  let oldAccount: Horizon.AccountResponse;
+  let oldBalances;
   try {
-    oldAccount = await horizon.loadAccount(oldKeypair.publicKey());
+    oldBalances = await fetchWalletBalances(oldKeypair.publicKey(), HORIZON_URL, USDC_ISSUER);
   } catch {
     console.error("Could not load old agent wallet from Horizon. Is STELLAR_NETWORK correct?");
     process.exit(1);
   }
 
-  const usdcBalance = oldAccount.balances.find(
-    (b: any) => b.asset_code === "USDC" && b.asset_issuer === USDC_ISSUER
-  );
-  const xlmBalance = oldAccount.balances.find((b: any) => b.asset_type === "native");
-
-  const xlmAvailable = parseFloat(xlmBalance?.balance ?? "0");
-  const usdcAvailable = parseFloat(usdcBalance?.balance ?? "0");
+  const usdcAvailable = oldBalances.usdc;
+  const xlmAvailable = oldBalances.xlm;
   const xlmForBaseReserve = 2.5;  // base reserve (2×0.5) + 1 trustline + buffer
   const xlmForFees = 0.01;
   const xlmToSend = Math.max(0, xlmAvailable - xlmForBaseReserve - xlmForFees);
