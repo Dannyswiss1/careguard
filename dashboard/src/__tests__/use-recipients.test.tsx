@@ -9,7 +9,7 @@
 
 import { renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, it, expect, vi } from 'vitest';
-import { useRecipients } from '../lib/useRecipients';
+import { useRecipients } from '../lib/use-recipients';
 
 const recipients = [
   {
