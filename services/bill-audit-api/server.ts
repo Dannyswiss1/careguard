@@ -22,12 +22,17 @@ import {
   type LineItem,
   validateBillAuditRequest,
 } from "../../shared/bill-audit.ts";
-import { applyX402Middleware, NETWORK, OZ_FACILITATOR_URL } from "../../shared/x402-middleware.ts";
+import {
+  applyX402Middleware,
+  NETWORK,
+  OZ_FACILITATOR_URL,
+} from "../../shared/x402-verify-middleware.ts";
 import { createCorsMiddleware } from "../../shared/cors.ts";
 import { applySecurityMiddleware } from "../../shared/security-middleware.ts";
 import { logger } from "../../shared/logger.ts";
 import { requestContextMiddleware } from "../../shared/request-context.ts";
 import { requestLoggerMiddleware } from "../../shared/request-logger.ts";
+import { gracefulShutdown } from "../../shared/graceful-shutdown.ts";
 import { sanitizeUserString } from "../../shared/sanitize.ts";
 import { billAuditOversizedRejectionsTotal } from "../../shared/metrics.ts";
 
@@ -51,16 +56,27 @@ let allowlistLoaded = false;
 
 function loadDuplicateAllowlist() {
   try {
-    const allowlistPath = new URL('./duplicates-allowlist.json', import.meta.url).pathname;
-    const data = JSON.parse(readFileSync(allowlistPath, 'utf-8')) as DuplicateAllowlistEntry[];
+    const allowlistPath = new URL(
+      "./duplicates-allowlist.json",
+      import.meta.url,
+    ).pathname;
+    const data = JSON.parse(
+      readFileSync(allowlistPath, "utf-8"),
+    ) as DuplicateAllowlistEntry[];
 
-    duplicateAllowlist = new Set(data.map(entry => entry.code));
-    allowlistMetadata = new Map(data.map(entry => [entry.code, entry]));
+    duplicateAllowlist = new Set(data.map((entry) => entry.code));
+    allowlistMetadata = new Map(data.map((entry) => [entry.code, entry]));
     allowlistLoaded = true;
 
-    logger.info({ count: duplicateAllowlist.size, codes: Array.from(duplicateAllowlist) }, 'Loaded duplicate detection allowlist');
+    logger.info(
+      { count: duplicateAllowlist.size, codes: Array.from(duplicateAllowlist) },
+      "Loaded duplicate detection allowlist",
+    );
   } catch (err: any) {
-    logger.error({ err: err.message }, 'Failed to load duplicates-allowlist.json, using empty allowlist');
+    logger.error(
+      { err: err.message },
+      "Failed to load duplicates-allowlist.json, using empty allowlist",
+    );
     duplicateAllowlist = new Set();
     allowlistMetadata = new Map();
     allowlistLoaded = false;
@@ -71,25 +87,35 @@ function loadDuplicateAllowlist() {
 loadDuplicateAllowlist();
 
 // Reload allowlist on SIGHUP
-process.on('SIGHUP', () => {
-  logger.info('SIGHUP received, reloading duplicate allowlist');
+process.on("SIGHUP", () => {
+  logger.info("SIGHUP received, reloading duplicate allowlist");
   loadDuplicateAllowlist();
 });
 
 // Audit threshold configuration
-export const BILL_AUDIT_OVERCHARGE_MULTIPLIER = parseFloat(process.env.BILL_AUDIT_OVERCHARGE_MULTIPLIER || "1.5");
-export const BILL_AUDIT_SUGGESTED_MULTIPLIER = parseFloat(process.env.BILL_AUDIT_SUGGESTED_MULTIPLIER || "1.2");
-export const BILL_AUDIT_UPCODED_MULTIPLIER = parseFloat(process.env.BILL_AUDIT_UPCODED_MULTIPLIER || "3.0");
+export const BILL_AUDIT_OVERCHARGE_MULTIPLIER = parseFloat(
+  process.env.BILL_AUDIT_OVERCHARGE_MULTIPLIER || "1.5",
+);
+export const BILL_AUDIT_SUGGESTED_MULTIPLIER = parseFloat(
+  process.env.BILL_AUDIT_SUGGESTED_MULTIPLIER || "1.2",
+);
+export const BILL_AUDIT_UPCODED_MULTIPLIER = parseFloat(
+  process.env.BILL_AUDIT_UPCODED_MULTIPLIER || "3.0",
+);
 
 if (
   isNaN(BILL_AUDIT_OVERCHARGE_MULTIPLIER) ||
   isNaN(BILL_AUDIT_SUGGESTED_MULTIPLIER) ||
   isNaN(BILL_AUDIT_UPCODED_MULTIPLIER) ||
-  !(BILL_AUDIT_UPCODED_MULTIPLIER > BILL_AUDIT_OVERCHARGE_MULTIPLIER &&
+  !(
+    BILL_AUDIT_UPCODED_MULTIPLIER > BILL_AUDIT_OVERCHARGE_MULTIPLIER &&
     BILL_AUDIT_OVERCHARGE_MULTIPLIER > BILL_AUDIT_SUGGESTED_MULTIPLIER &&
-    BILL_AUDIT_SUGGESTED_MULTIPLIER > 1.0)
+    BILL_AUDIT_SUGGESTED_MULTIPLIER > 1.0
+  )
 ) {
-  throw new Error("Invalid bill-audit multipliers config: must satisfy UPCODED > OVERCHARGE > SUGGESTED > 1.0");
+  throw new Error(
+    "Invalid bill-audit multipliers config: must satisfy UPCODED > OVERCHARGE > SUGGESTED > 1.0",
+  );
 }
 
 interface AuditThresholdConfig {
@@ -97,20 +123,35 @@ interface AuditThresholdConfig {
   byCpt: Record<string, number>;
 }
 
-let auditThresholds: AuditThresholdConfig = { default: BILL_AUDIT_OVERCHARGE_MULTIPLIER, byCpt: {} };
+let auditThresholds: AuditThresholdConfig = {
+  default: BILL_AUDIT_OVERCHARGE_MULTIPLIER,
+  byCpt: {},
+};
 let thresholdsLoaded = false;
 
 function loadAuditThresholds() {
   try {
-    const thresholdsPath = new URL('./audit_thresholds.json', import.meta.url).pathname;
-    auditThresholds = JSON.parse(readFileSync(thresholdsPath, 'utf-8')) as AuditThresholdConfig;
+    const thresholdsPath = new URL("./audit_thresholds.json", import.meta.url)
+      .pathname;
+    auditThresholds = JSON.parse(
+      readFileSync(thresholdsPath, "utf-8"),
+    ) as AuditThresholdConfig;
     if (process.env.BILL_AUDIT_OVERCHARGE_MULTIPLIER) {
       auditThresholds.default = BILL_AUDIT_OVERCHARGE_MULTIPLIER;
     }
     thresholdsLoaded = true;
-    logger.info({ default: auditThresholds.default, cptCount: Object.keys(auditThresholds.byCpt).length }, 'Loaded audit thresholds configuration');
+    logger.info(
+      {
+        default: auditThresholds.default,
+        cptCount: Object.keys(auditThresholds.byCpt).length,
+      },
+      "Loaded audit thresholds configuration",
+    );
   } catch (err: any) {
-    logger.error({ err: err.message }, `Failed to load audit_thresholds.json, using default threshold of ${BILL_AUDIT_OVERCHARGE_MULTIPLIER}`);
+    logger.error(
+      { err: err.message },
+      `Failed to load audit_thresholds.json, using default threshold of ${BILL_AUDIT_OVERCHARGE_MULTIPLIER}`,
+    );
     auditThresholds = { default: BILL_AUDIT_OVERCHARGE_MULTIPLIER, byCpt: {} };
     thresholdsLoaded = false;
   }
@@ -124,14 +165,14 @@ function getAuditThreshold(cptCode: string): number {
 loadAuditThresholds();
 
 // Reload thresholds on SIGHUP
-process.on('SIGHUP', () => {
-  logger.info('SIGHUP received, reloading audit thresholds');
+process.on("SIGHUP", () => {
+  logger.info("SIGHUP received, reloading audit thresholds");
   loadAuditThresholds();
 });
 
 // Rates valid dates
-const RATES_AS_OF = '2026-01-01';
-const RATES_VALID_UNTIL = '2026-12-31';
+const RATES_AS_OF = "2026-01-01";
+const RATES_VALID_UNTIL = "2026-12-31";
 
 export { FAIR_MARKET_RATES };
 
@@ -140,7 +181,14 @@ function checkRatesFreshness() {
   const validUntil = new Date(RATES_VALID_UNTIL);
   const now = new Date();
   if (now > validUntil) {
-    logger.warn({ ratesAsOf: RATES_AS_OF, validUntil: RATES_VALID_UNTIL, currentDate: now.toISOString() }, 'Fair market rates are stale. Please refresh rates from CMS fee schedule.');
+    logger.warn(
+      {
+        ratesAsOf: RATES_AS_OF,
+        validUntil: RATES_VALID_UNTIL,
+        currentDate: now.toISOString(),
+      },
+      "Fair market rates are stale. Please refresh rates from CMS fee schedule.",
+    );
   }
 }
 
@@ -148,10 +196,18 @@ function checkRatesFreshness() {
 // before RATES_VALID_UNTIL would otherwise never notice the rates going stale.
 const RATES_FRESHNESS_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 checkRatesFreshness();
-const ratesFreshnessInterval = setInterval(checkRatesFreshness, RATES_FRESHNESS_CHECK_INTERVAL_MS);
+const ratesFreshnessInterval = setInterval(
+  checkRatesFreshness,
+  RATES_FRESHNESS_CHECK_INTERVAL_MS,
+);
 ratesFreshnessInterval.unref();
 
-interface BillItem { description: string; cptCode: string; quantity: number; chargedAmount: number; }
+interface BillItem {
+  description: string;
+  cptCode: string;
+  quantity: number;
+  chargedAmount: number;
+}
 
 export function auditBill(lineItems: BillItem[]) {
   return sharedAuditBill(lineItems, {
@@ -176,36 +232,96 @@ app.use(requestLoggerMiddleware());
 
 app.get("/", (_req, res) => {
   res.json({
-    service: "CareGuard Medical Bill Audit API", version: "1.0.0",
-    protocol: "x402 on Stellar", network: NETWORK, payTo: PAY_TO, price: "$0.01 per audit",
+    service: "CareGuard Medical Bill Audit API",
+    version: "1.0.0",
+    protocol: "x402 on Stellar",
+    network: NETWORK,
+    payTo: PAY_TO,
+    price: "$0.01 per audit",
   });
 });
 
 app.get("/bill/sample", (req, res) => {
   // In standalone mode the recipient DB is unavailable; accept a patientName hint from the caller.
   // In unified mode, server.ts intercepts this route and resolves the name from the recipients DB.
-  const patientName = typeof req.query.patientName === 'string'
-    ? req.query.patientName
-    : 'Rosa Garcia';
+  const patientName =
+    typeof req.query.patientName === "string"
+      ? req.query.patientName
+      : "Rosa Garcia";
   res.json({
-    patientName, facilityName: "General Hospital", dateOfService: "2026-03-15",
+    patientName,
+    facilityName: "General Hospital",
+    dateOfService: "2026-03-15",
     lineItems: [
-      { description: "Hospital care, high complexity", cptCode: "99233", quantity: 3, chargedAmount: 630 },
-      { description: "Comprehensive metabolic panel", cptCode: "80053", quantity: 1, chargedAmount: 95 },
-      { description: "Complete blood count (CBC)", cptCode: "85025", quantity: 1, chargedAmount: 45 },
-      { description: "Complete blood count (CBC)", cptCode: "85025", quantity: 1, chargedAmount: 45 },
-      { description: "Venipuncture (blood draw)", cptCode: "36415", quantity: 1, chargedAmount: 10 },
-      { description: "Chest X-ray, 2 views", cptCode: "71046", quantity: 1, chargedAmount: 180 },
-      { description: "Electrocardiogram (ECG)", cptCode: "93000", quantity: 1, chargedAmount: 35 },
-      { description: "Office visit, complex", cptCode: "99215", quantity: 1, chargedAmount: 1250 },
-      { description: "Hospital discharge day", cptCode: "99238", quantity: 1, chargedAmount: 160 },
-      { description: "Injection, subcutaneous", cptCode: "96372", quantity: 2, chargedAmount: 50 },
+      {
+        description: "Hospital care, high complexity",
+        cptCode: "99233",
+        quantity: 3,
+        chargedAmount: 630,
+      },
+      {
+        description: "Comprehensive metabolic panel",
+        cptCode: "80053",
+        quantity: 1,
+        chargedAmount: 95,
+      },
+      {
+        description: "Complete blood count (CBC)",
+        cptCode: "85025",
+        quantity: 1,
+        chargedAmount: 45,
+      },
+      {
+        description: "Complete blood count (CBC)",
+        cptCode: "85025",
+        quantity: 1,
+        chargedAmount: 45,
+      },
+      {
+        description: "Venipuncture (blood draw)",
+        cptCode: "36415",
+        quantity: 1,
+        chargedAmount: 10,
+      },
+      {
+        description: "Chest X-ray, 2 views",
+        cptCode: "71046",
+        quantity: 1,
+        chargedAmount: 180,
+      },
+      {
+        description: "Electrocardiogram (ECG)",
+        cptCode: "93000",
+        quantity: 1,
+        chargedAmount: 35,
+      },
+      {
+        description: "Office visit, complex",
+        cptCode: "99215",
+        quantity: 1,
+        chargedAmount: 1250,
+      },
+      {
+        description: "Hospital discharge day",
+        cptCode: "99238",
+        quantity: 1,
+        chargedAmount: 160,
+      },
+      {
+        description: "Injection, subcutaneous",
+        cptCode: "96372",
+        quantity: 2,
+        chargedAmount: 50,
+      },
     ],
   });
 });
 
 // Reject oversized bill audit requests BEFORE x402 payment is charged (issue #13)
-const BILL_AUDIT_MAX_ITEMS = parseInt(process.env.BILL_AUDIT_MAX_ITEMS || "500", 10);
+const BILL_AUDIT_MAX_ITEMS = parseInt(
+  process.env.BILL_AUDIT_MAX_ITEMS || "500",
+  10,
+);
 app.post("/bill/audit", (req, res, next) => {
   const items = req.body?.lineItems;
   if (Array.isArray(items) && items.length > BILL_AUDIT_MAX_ITEMS) {
@@ -222,7 +338,12 @@ app.post("/bill/audit", (req, res, next) => {
 // x402 payment middleware
 applyX402Middleware(app, {
   "POST /bill/audit": {
-    accepts: { scheme: "exact", network: NETWORK, payTo: PAY_TO, price: "$0.01" },
+    accepts: {
+      scheme: "exact",
+      network: NETWORK,
+      payTo: PAY_TO,
+      price: "$0.01",
+    },
     description: "Medical bill audit — $0.01 USDC",
   },
 });
@@ -252,16 +373,23 @@ app.post("/bill/audit", (req, res) => {
   }
 });
 
-app.use((err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
-  if (err.type === "entity.too.large") {
-    return res.status(413).json({
-      error: "Request body too large",
-      code: "BODY_TOO_LARGE",
-      details: { limit: err.limit },
-    });
-  }
-  next(err);
-});
+app.use(
+  (
+    err: any,
+    _req: express.Request,
+    res: express.Response,
+    next: express.NextFunction,
+  ) => {
+    if (err.type === "entity.too.large") {
+      return res.status(413).json({
+        error: "Request body too large",
+        code: "BODY_TOO_LARGE",
+        details: { limit: err.limit },
+      });
+    }
+    next(err);
+  },
+);
 
 let isDraining = false;
 app.get("/ready", (_req, res) => {
@@ -280,18 +408,20 @@ app.get("/ready", (_req, res) => {
 });
 
 export const server = app.listen(PORT, () => {
-  logger.info({ port: PORT, network: NETWORK, facilitator: OZ_FACILITATOR_URL, payTo: PAY_TO }, "Bill Audit API started");
+  logger.info(
+    {
+      port: PORT,
+      network: NETWORK,
+      facilitator: OZ_FACILITATOR_URL,
+      payTo: PAY_TO,
+    },
+    "Bill Audit API started",
+  );
 });
 
-process.on("SIGTERM", () => {
-  logger.info("SIGTERM received. Draining server...");
-  isDraining = true;
-  server.close(() => {
-    logger.info("Server closed. Exiting process.");
-    process.exit(0);
-  });
-  setTimeout(() => {
-    logger.error("Graceful shutdown timeout. Forcing exit.");
-    process.exit(1);
-  }, 30000);
+gracefulShutdown({
+  server,
+  onDrainStart: () => {
+    isDraining = true;
+  },
 });
