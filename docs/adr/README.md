@@ -9,6 +9,7 @@ This directory contains records of key architectural decisions made in the CareG
 | **001** | [001-pharmacy-zip.md](001-pharmacy-zip.md) — Zip Code-Aware Pharmacy Pricing Model | Accepted | 2026-06-25 |
 | **002** | [002-pii-in-persistence.md](002-pii-in-persistence.md) — PII-Sensitive Data in Local Persistence | Accepted | 2026-06-29 |
 | **004** | [004-pharmacy-pricing-source.md](004-pharmacy-pricing-source.md) — Pharmacy Pricing Source Integration | Accepted | 2026-07-10 |
+| **005** | [005-strict-type-checking-flags.md](005-strict-type-checking-flags.md) — Deferred Adoption of noUncheckedIndexedAccess and noImplicitOverride | Proposed | 2026-08-27 |
 | **006** | [006-typescript-runtime.md](006-typescript-runtime.md) — TypeScript Runtime Strategy | Accepted | 2026-07-22 |
 | **008** | [008-audit-log-hash-chain.md](008-audit-log-hash-chain.md) — Append-Only Hash-Chained Audit Log Design | Accepted | 2026-07-27 |
 | **—**   | [unified-vs-split-server.md](unified-vs-split-server.md) — Unified vs Split Server Architecture | Accepted | 2026-07-15 |
@@ -58,7 +59,7 @@ Every ADR has one of the following statuses:
 | 002 | [PII in Persistence and Audit](002-pii-in-persistence.md) | Accepted |
 | 003 | [Unified vs. Split Server](unified-vs-split-server.md) | Accepted |
 | 004 | [Pharmacy Pricing Source](004-pharmacy-pricing-source.md) | Accepted |
-| 005 | *(vacant — reserved)* | — |
+| 005 | [Deferred Adoption of noUncheckedIndexedAccess and noImplicitOverride](005-strict-type-checking-flags.md) | Proposed |
 | 006 | [TypeScript Runtime Strategy](006-typescript-runtime.md) | Accepted |
 
 > **Note:** ADR 003 was originally documented as `unified-vs-split-server.md`
