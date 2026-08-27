@@ -2,6 +2,8 @@
 
 CareGuard enforces five limits on every payment the agent makes:
 
+See also the worked examples in [docs/guides/category-budgets-examples.md](guides/category-budgets-examples.md) for a caregiver-friendly explanation of how the category budgets interact with the overall monthly cap.
+
 | Field | Default | Description |
 |---|---|---|
 | `dailyLimit` | $100 | Maximum total spending (medications + bills) within one calendar day in the caregiver's timezone |
