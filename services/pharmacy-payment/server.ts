@@ -20,8 +20,7 @@ import { USDC_SAC_TESTNET } from "@stellar/mpp";
 import { createCorsMiddleware } from "../../shared/cors.ts";
 import { applySecurityMiddleware } from "../../shared/security-middleware.ts";
 import { logger } from "../../shared/logger.ts";
-import { requestContextMiddleware } from "../../shared/request-context.ts";
-import { requestLoggerMiddleware } from "../../shared/request-logger.ts";
+import { requestLifecycleMiddleware } from "../../shared/request-lifecycle.ts";
 import { gracefulShutdown } from "../../shared/graceful-shutdown.ts";
 import { sanitizeUserString } from "../../shared/sanitize.ts";
 import {
@@ -110,8 +109,7 @@ export const app = express();
 applySecurityMiddleware(app);
 app.use(createCorsMiddleware());
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT ?? "20kb" }));
-app.use(requestContextMiddleware());
-app.use(requestLoggerMiddleware());
+app.use(requestLifecycleMiddleware());
 
 app.get("/", (_req, res) => {
   res.json({

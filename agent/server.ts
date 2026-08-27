@@ -21,8 +21,7 @@ import { validateTask, getSuspiciousTaskCount } from "../shared/task-validation.
 import { appendAuditEntry, auditRouter } from "../shared/audit-log.ts";
 import { rateLimiters } from "../shared/rate-limit.ts";
 import { agentQueue } from "../shared/agent-queue.ts";
-import { requestContextMiddleware } from "../shared/request-context.ts";
-import { requestLoggerMiddleware } from "../shared/request-logger.ts";
+import { requestLifecycleMiddleware } from "../shared/request-lifecycle.ts";
 import { gracefulShutdown } from "../shared/graceful-shutdown.ts";
 import {
   metricsHandler,
@@ -178,8 +177,7 @@ app.use(rateLimiters.default);
 applySecurityMiddleware(app);
 app.use(createCorsMiddleware());
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT ?? "20kb" }));
-app.use(requestContextMiddleware());
-app.use(requestLoggerMiddleware());
+app.use(requestLifecycleMiddleware());
 app.get("/metrics", metricsHandler());
 
 // Per-run tool call cap
@@ -308,7 +306,7 @@ app.get("/", (_req, res) => {
   res.json({
     service: "CareGuard AI Agent",
     version: "1.0.0",
-    network: "stellar:testnet",
+    network: `stellar:${STELLAR_CONFIG.networkType}`,
     llm: `${LLM_BASE_URL} / ${LLM_MODEL}`,
     agentWallet: agentKeypair.publicKey(),
     recipients: ["rosa"],
@@ -592,15 +590,27 @@ app.post("/agent/dispute-letter", (req, res) => {
 // Startup: verify agent wallet has USDC balance
 async function verifyWallet() {
   try {
-    const account = await horizonServer.loadAccount(agentKeypair.publicKey());
-    const usdcBalance = account.balances.find((b: any) => b.asset_code === "USDC" && b.asset_issuer === process.env.USDC_ISSUER);
-    if (!usdcBalance) {
-      logger.error({ wallet: agentKeypair.publicKey() }, "agent wallet has no USDC trustline — fund at https://faucet.circle.com");
+    const balances = await fetchWalletBalances(
+      agentKeypair.publicKey(),
+      STELLAR_CONFIG.horizonUrl,
+      process.env.USDC_ISSUER || "",
+    );
+    if (!balances.hasUsdcTrustline) {
+      logger.error(
+        { wallet: agentKeypair.publicKey() },
+        "agent wallet has no USDC trustline — fund at https://faucet.circle.com",
+      );
       process.exit(1);
     }
-    logger.info({ usdc: usdcBalance.balance, xlm: account.balances.find((b: any) => b.asset_type === "native")?.balance || "0" }, "wallet balances");
+    logger.info(
+      { usdc: balances.usdc.toFixed(2), xlm: balances.xlm.toFixed(2) },
+      "wallet balances",
+    );
   } catch (err: any) {
-    logger.error({ err: err.message, wallet: agentKeypair.publicKey() }, "failed to load agent wallet");
+    logger.error(
+      { err: err.message, wallet: agentKeypair.publicKey() },
+      "failed to load agent wallet",
+    );
     process.exit(1);
   }
 }
