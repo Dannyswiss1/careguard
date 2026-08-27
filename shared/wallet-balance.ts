@@ -17,11 +17,13 @@ import { Horizon, Keypair } from "@stellar/stellar-sdk";
 import { pauseAgent, isPaused, getAgentState } from "./agent-state.ts";
 import { notify } from "./notifications.ts";
 import { appendAuditEntry } from "./audit-log.ts";
+import { resolveStellarNetwork } from "./stellar-network.ts";
 
 export interface BalanceSnapshot {
   usdc: number;
   xlm: number;
   address: string;
+  hasUsdcTrustline?: boolean;
 }
 
 export interface WalletCheckResult {
@@ -40,9 +42,12 @@ export interface WalletCheckOptions {
   loadBalances?: (address: string) => Promise<BalanceSnapshot>;
 }
 
-const DEFAULT_HORIZON = "https://horizon-testnet.stellar.org";
 const DEFAULT_USDC_ISSUER =
   process.env.USDC_ISSUER || "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
+
+// Resolve at module load time to get configured Horizon URL
+const STELLAR_CONFIG = resolveStellarNetwork();
+const DEFAULT_HORIZON = STELLAR_CONFIG.horizonUrl;
 
 export function getThresholds(opts?: WalletCheckOptions): { usdc: number; xlm: number } {
   const usdc = opts?.usdcThreshold ?? parseFloat(process.env.WALLET_LOW_USDC_THRESHOLD || "1");
@@ -53,7 +58,7 @@ export function getThresholds(opts?: WalletCheckOptions): { usdc: number; xlm: n
   };
 }
 
-async function defaultLoadBalances(address: string, horizonUrl: string, usdcIssuer: string): Promise<BalanceSnapshot> {
+export async function fetchWalletBalances(address: string, horizonUrl: string, usdcIssuer: string): Promise<BalanceSnapshot> {
   const server = new Horizon.Server(horizonUrl);
   const account = await server.loadAccount(address);
   const usdcEntry = account.balances.find(
@@ -64,8 +69,10 @@ async function defaultLoadBalances(address: string, horizonUrl: string, usdcIssu
     address,
     usdc: usdcEntry ? parseFloat((usdcEntry as any).balance) : 0,
     xlm: xlmEntry ? parseFloat((xlmEntry as any).balance) : 0,
+    hasUsdcTrustline: Boolean(usdcEntry),
   };
 }
+
 
 export async function checkWalletBalance(opts: WalletCheckOptions = {}): Promise<WalletCheckResult> {
   const secret = opts.agentSecretKey ?? process.env.AGENT_SECRET_KEY;
@@ -84,7 +91,7 @@ export async function checkWalletBalance(opts: WalletCheckOptions = {}): Promise
   const usdcIssuer = opts.usdcIssuer ?? DEFAULT_USDC_ISSUER;
   const thresholds = getThresholds(opts);
   const loadBalances =
-    opts.loadBalances ?? ((addr: string) => defaultLoadBalances(addr, horizonUrl, usdcIssuer));
+    opts.loadBalances ?? ((addr: string) => fetchWalletBalances(addr, horizonUrl, usdcIssuer));
 
   let snapshot: BalanceSnapshot;
   try {

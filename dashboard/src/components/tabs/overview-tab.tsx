@@ -4,8 +4,11 @@ import { useEffect, useState } from "react";
 import { Bar } from "../primitives/bar";
 import { Btn } from "../primitives/btn";
 import { Card } from "../primitives/card";
-import type { AgentResult, SpendingData } from "../types";
+import type { AgentResult, AgentLlmError, SpendingData } from "../types";
 import type { RecipientProfile } from "../../lib/types";
+import { agentFetch } from "../../lib/agent-fetch";
+import { formatCurrency, getTranslations, type Locale } from "../../i18n";
+import { formatCurrency, formatDate, formatNumber, getTranslations, type Locale } from "../../i18n";
 
 export interface OverviewTabProps {
   spending: SpendingData | null;
@@ -14,7 +17,9 @@ export interface OverviewTabProps {
   loading: boolean;
   activeTask: string;
   onRunTask: (task: string, label: string) => void;
+  onCancelTask?: () => void;
   recipient?: RecipientProfile;
+  locale?: Locale;
 }
 
 const TASKS = {
@@ -30,18 +35,27 @@ export function OverviewTab({
   loading,
   activeTask,
   onRunTask,
+  onCancelTask,
+  recipient,
+  locale = "en",
 }: OverviewTabProps) {
+  const t = getTranslations(locale);
+
   const savings = agentResult
     ? agentResult.toolCalls
-        .filter((t) => t.tool === "compare_pharmacy_prices")
-        .reduce((s, t) => s + (t.result?.potentialSavings || 0), 0)
+      .filter((t) => t.tool === "compare_pharmacy_prices")
+      .reduce((s, t) => s + (t.result?.potentialSavings || 0), 0)
     : 0;
   const overcharges = agentResult
     ? agentResult.toolCalls
+      .filter(
+        (t) => t.tool === "audit_medical_bill" || t.tool === "fetch_and_audit_bill",
+      )
+      .reduce((s, t) => s + (t.result?.totalOvercharge || 0), 0)
         .filter(
           (t) => t.tool === "audit_medical_bill" || t.tool === "fetch_and_audit_bill",
         )
-        .reduce((s, t) => s + (t.result?.totalOvercharge || 0),0)
+        .reduce((s, t) => s + (t.result?.totalOvercharge || 0), 0)
     : 0;
 
   const llmTokens = agentResult?.llmUsage
@@ -59,98 +73,122 @@ export function OverviewTab({
       tabIndex={0}
       className="space-y-6"
     >
-      <AdherencePrompt />
+      <AdherencePrompt locale={locale} />
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <Card
-          label="Monthly Spending"
-          value={`$${spending?.spending.total.toFixed(2) || "0.00"}`}
-          sub={`of $${spending?.policy.monthlyLimit || 500} limit`}
+          label={t.overview.monthlySpending}
+          value={formatCurrency(spending?.spending.total ?? 0, locale)}
+          sub={`of ${formatCurrency(spending?.policy.monthlyLimit ?? 500, locale, 0)} ${t.overview.limit}`}
           color="sky"
         />
         <Card
-          label="Savings Found"
-          value={agentResult ? `$${savings.toFixed(2)}/mo` : "$0.00/mo"}
-          sub="by switching pharmacies"
+          label={t.overview.savingsFound}
+          value={agentResult ? `${formatCurrency(savings, locale)}/mo` : `${formatCurrency(0, locale)}/mo`}
+          sub={t.overview.bySwitching}
           color="green"
         />
         <Card
-          label="Billing Errors Caught"
-          value={agentResult ? `$${overcharges.toFixed(2)}` : "$0.00"}
-          sub="in overcharges identified"
+          label={t.overview.billingErrors}
+          value={agentResult ? formatCurrency(overcharges, locale) : formatCurrency(0, locale)}
+          sub={t.overview.inOvercharges}
           color="amber"
         />
         <Card
-          label="Agent API Costs"
-          value={`$${spending?.spending.serviceFees.toFixed(4) || "0.0000"}`}
-          sub={`${spending?.transactionCount || 0} queries via x402`}
+          label={t.overview.agentApiCosts}
+          value={formatCurrency(spending?.spending.serviceFees ?? 0, locale, 4)}
+          sub={`${spending?.transactionCount || 0} ${t.overview.queries}`}
+          sub={`${spending?.transactionCount ? formatNumber(spending.transactionCount, locale) : 0} ${t.overview.queries}`}
           color="slate"
         />
         <Card
           label="LLM Tokens"
-          value={agentResult ? `${llmTokens} tokens` : "0 tokens"}
-          sub={`≈ $${llmCost} this run`}
-          color="purple"
+          value={agentResult ? `${formatNumber(llmTokens, locale)} tokens` : "0 tokens"}
+          sub={`≈ ${formatCurrency(Number(llmCost), locale, 4)} this run`}
+          color="sky"
         />
       </div>
 
       <div className="bg-white rounded-xl border border-slate-200 p-6">
-        <h2 className="text-sm font-semibold text-slate-700 mb-4">Budget Status</h2>
+        <h2 className="text-sm font-semibold text-slate-700 mb-4">{t.overview.budgetStatus}</h2>
         <div className="space-y-4">
           <Bar
-            label="Medications"
+            label={t.budget.medications}
             spent={spending?.spending.medications || 0}
             budget={spending?.policy.medicationMonthlyBudget || 300}
+            locale={locale}
           />
           <Bar
-            label="Medical Bills"
+            label={t.budget.medicalBills}
             spent={spending?.spending.bills || 0}
             budget={spending?.policy.billMonthlyBudget || 500}
+            locale={locale}
           />
         </div>
       </div>
 
       <div className="bg-white rounded-xl border border-slate-200 p-6">
-        <h2 className="text-sm font-semibold text-slate-700 mb-4">Agent Actions</h2>
+        <h2 className="text-sm font-semibold text-slate-700 mb-4">{t.overview.agentActions}</h2>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <Btn
-            label="Compare Medication Prices"
+            label={t.tasks.comparePrices}
             desc={
               agentPaused
-                ? "Agent is paused"
-                : "Find cheapest pharmacies for Rosa's 4 medications"
+                ? t.tasks.agentPaused
+                : t.tasks.findCheapest
             }
             busy={(loading && activeTask === "meds") || agentPaused}
             onClick={() => onRunTask(TASKS.meds, "meds")}
           />
           <Btn
-            label="Audit Hospital Bill"
+            label={t.tasks.auditBill}
             desc={
               agentPaused
-                ? "Agent is paused"
-                : "Scan Rosa's bill for errors and overcharges"
+                ? t.tasks.agentPaused
+                : t.tasks.scanBill
             }
             busy={(loading && activeTask === "bill") || agentPaused}
             onClick={() => onRunTask(TASKS.bill, "bill")}
           />
           <Btn
-            label="Try Over-Budget Payment"
+            label={t.tasks.overBudget}
             desc={
               agentPaused
-                ? "Agent is paused"
-                : "Demo: agent attempts $600 payment (over $500 bill limit)"
+                ? t.tasks.agentPaused
+                : t.tasks.demoPayment
             }
             busy={(loading && activeTask === "block") || agentPaused}
             onClick={() => onRunTask(TASKS.block, "block")}
           />
         </div>
         {loading && (
-          <div className="mt-4 flex items-center gap-2 text-sm text-sky-600">
+          <div className="mt-4 flex items-center gap-3 text-sm text-sky-600">
             <div className="w-4 h-4 border-2 border-sky-600 border-t-transparent rounded-full animate-spin" />
-            Agent working...
+            {t.tasks.working}
+            {onCancelTask && (
+              <button
+                onClick={onCancelTask}
+                className="px-3 py-1 bg-red-50 text-red-600 rounded-lg text-xs font-medium hover:bg-red-100 cursor-pointer transition-all"
+              >
+                Cancel
+              </button>
+            )}
           </div>
         )}
       </div>
+
+      {agentResult?.events?.some((e) => e.kind === "iteration_limit_reached") && (
+        <div
+          role="alert"
+          className="bg-yellow-50 border border-yellow-300 rounded-xl p-4 text-sm text-yellow-800"
+        >
+          Task may be incomplete — agent ran out of steps
+        </div>
+      )}
+
+      {agentResult?.error && (
+        <LlmErrorBanner error={agentResult.error} />
+      )}
 
       {agentResult && (
         <div
@@ -159,7 +197,7 @@ export function OverviewTab({
           aria-atomic="true"
         >
           <h2 className="text-sm font-semibold text-slate-700 mb-3">
-            Agent Response
+            {t.overview.agentResponse}
           </h2>
           <p className="text-sm text-slate-600 whitespace-pre-wrap">
             {agentResult.response}
@@ -194,25 +232,38 @@ export function OverviewTab({
   );
 }
 
-function AdherencePrompt() {
+function LlmErrorBanner({ error }: { error: AgentLlmError }) {
+  return (
+    <div
+      role="alert"
+      aria-live="assertive"
+      className="bg-red-50 border border-red-300 rounded-xl p-4 text-sm text-red-800"
+    >
+      <p className="font-semibold mb-1">⚠ LLM error at iteration {error.iteration} — results below are partial</p>
+      <p className="text-red-700">{error.message}{error.code ? ` (${error.code})` : ""}</p>
+    </div>
+  );
+}
+
+function AdherencePrompt({ locale = "en" }: { locale?: Locale }) {
   const [adherence, setAdherence] = useState<{ pending: Array<{ id: string; drug: string; dueDate: string }>; flagged: Array<{ id: string; drug: string }> } | null>(null);
 
   useEffect(() => {
-    fetch("/agent/adherence/pending?recipient_id=rosa")
+    agentFetch("/agent/adherence/pending?recipient_id=rosa")
       .then((r) => r.json())
       .then((data) => setAdherence(data))
-      .catch(() => {});
+      .catch(() => { });
   }, []);
 
   const handleConfirm = async (recordId: string) => {
     try {
-      await fetch("/agent/adherence/confirm", {
+      await agentFetch("/agent/adherence/confirm", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ record_id: recordId }),
       });
       setAdherence((prev) => prev ? { ...prev, pending: prev.pending.filter((p) => p.id !== recordId) } : prev);
-    } catch {}
+    } catch { }
   };
 
   if (!adherence || (adherence.pending.length === 0 && adherence.flagged.length === 0)) return null;
@@ -234,7 +285,7 @@ function AdherencePrompt() {
             <div key={item.id} className="flex items-center justify-between bg-white rounded-lg p-2 border border-amber-100">
               <div>
                 <span className="text-sm font-medium text-slate-700">{item.drug}</span>
-                <span className="text-xs text-slate-400 ml-2">due {new Date(item.dueDate).toLocaleDateString()}</span>
+                <span className="text-xs text-slate-400 ml-2">due {formatDate(item.dueDate, locale)}</span>
               </div>
               <button
                 onClick={() => handleConfirm(item.id)}

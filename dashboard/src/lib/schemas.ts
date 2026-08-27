@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { getTranslations } from '../i18n';
+import { POLICY_FIELD_T_KEY } from './policy-field-labels';
 
 export const SpendingPolicyInput = z.object({
   dailyLimit: z.number(),
@@ -22,14 +24,16 @@ export type PolicyValidation = {
   isValid: boolean;
 };
 
-const FIELD_LABEL: Record<keyof SpendingPolicyInput, string> = {
-  dailyLimit: 'Daily limit',
-  monthlyLimit: 'Monthly limit',
-  medicationMonthlyBudget: 'Medication budget',
-  billMonthlyBudget: 'Bill budget',
-  approvalThreshold: 'Approval threshold',
-  holdTimeSeconds: 'Hold time before auto-approval (seconds)',
-};
+// Validation messages use the English labels — same source of truth
+// (POLICY_FIELD_T_KEY + translation entries) that policy-tab.tsx uses to
+// render the field labels the caregiver actually sees (#1144).
+const enPolicy = getTranslations('en').policy;
+const FIELD_LABEL: Record<keyof SpendingPolicyInput, string> = Object.fromEntries(
+  (Object.keys(POLICY_FIELD_T_KEY) as Array<keyof SpendingPolicyInput>).map((field) => [
+    field,
+    enPolicy[POLICY_FIELD_T_KEY[field] as keyof typeof enPolicy],
+  ]),
+) as Record<keyof SpendingPolicyInput, string>;
 
 export function validatePolicy(input: unknown): PolicyValidation {
   const errors: PolicyFieldError[] = [];
@@ -50,29 +54,41 @@ export function validatePolicy(input: unknown): PolicyValidation {
   }
 
   const v = parsed.data;
-  const fields: (keyof SpendingPolicyInput)[] = [
+  const moneyFields: (keyof SpendingPolicyInput)[] = [
     'dailyLimit',
     'monthlyLimit',
     'medicationMonthlyBudget',
     'billMonthlyBudget',
     'approvalThreshold',
-    'holdTimeSeconds',
   ];
-  for (const f of fields) {
+  // holdTimeSeconds may be 0 (no hold), money fields must be ≥ 1 (#211)
+  const allFields: (keyof SpendingPolicyInput)[] = [...moneyFields, 'holdTimeSeconds'];
+
+  for (const f of allFields) {
     if (!Number.isFinite(v[f])) {
       errors.push({
         field: f,
         message: `${FIELD_LABEL[f]} must be a finite number`,
       });
-    } else if (v[f] < 0) {
+    } else if (moneyFields.includes(f as any) && v[f] < 1) {
+      errors.push({
+        field: f,
+        message: `${FIELD_LABEL[f]} must be at least 1`,
+      });
+    } else if (f === 'holdTimeSeconds' && v[f] < 0) {
       errors.push({
         field: f,
         message: `${FIELD_LABEL[f]} cannot be negative`,
       });
-    } else if (v[f] > 10000) {
+    } else if (f === 'holdTimeSeconds' && v[f] > 86400) {
       errors.push({
         field: f,
-        message: `${FIELD_LABEL[f]} cannot exceed 10000`,
+        message: `${FIELD_LABEL[f]} cannot exceed 86,400`,
+      });
+    } else if (moneyFields.includes(f as any) && v[f] > 50000) {
+      errors.push({
+        field: f,
+        message: `${FIELD_LABEL[f]} cannot exceed 50,000`,
       });
     }
   }
@@ -109,11 +125,12 @@ export function validatePolicy(input: unknown): PolicyValidation {
     Number.isFinite(v.medicationMonthlyBudget) &&
     Number.isFinite(v.billMonthlyBudget) &&
     Number.isFinite(v.monthlyLimit) &&
-    v.medicationMonthlyBudget + v.billMonthlyBudget > v.monthlyLimit * 1.2
+    v.medicationMonthlyBudget + v.billMonthlyBudget > v.monthlyLimit
   ) {
-    warnings.push({
+    errors.push({
       field: 'medicationMonthlyBudget',
-      message: 'Combined category budgets exceed 120% of monthly limit',
+      message:
+        'Medication and bill budgets together cannot exceed monthly limit',
     });
   }
 

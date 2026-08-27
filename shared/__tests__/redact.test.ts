@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Keypair } from "@stellar/stellar-sdk";
-import { redact, redactString } from "../redact.ts";
+import { redact, redactString, redactPII, hashTask, registerKnownNames } from "../redact.ts";
 
 const FAKE_SECRET = Keypair.random().secret(); // 56 chars, S + 55 base32
 
@@ -69,5 +69,96 @@ describe("redact (object)", () => {
       cur = cur.next;
     }
     expect(() => redact(deep)).not.toThrow();
+  });
+});
+
+describe("redactPII", () => {
+  it("redacts patient names (two consecutive capitalized words)", () => {
+    const input = "Please refill Rosa Garcia's prescription";
+    const output = redactPII(input);
+    expect(output).not.toContain("Rosa Garcia");
+    expect(output).toContain("[PATIENT NAME]");
+  });
+
+  it("redacts drug specifics (drug name with dosage)", () => {
+    const input = "Order Lisinopril 10mg for the patient";
+    const output = redactPII(input);
+    expect(output).not.toContain("Lisinopril 10mg");
+    expect(output).toContain("[MEDICATION]");
+  });
+
+  it("redacts both patient names and drug specifics in the same string", () => {
+    const input = "Refill Metformin 500mg for Rosa Garcia";
+    const output = redactPII(input);
+    expect(output).not.toContain("Rosa Garcia");
+    expect(output).not.toContain("Metformin 500mg");
+    expect(output).toContain("[PATIENT NAME]");
+    expect(output).toContain("[MEDICATION]");
+  });
+
+  it("leaves non-PII text unchanged", () => {
+    const input = "Check the spending policy summary";
+    expect(redactPII(input)).toBe(input);
+  });
+
+  it("redacts all occurrences in a long string", () => {
+    const input = "Rosa Garcia needs Rosa Garcia's medications";
+    const output = redactPII(input);
+    expect(output.match(/\[PATIENT NAME\]/g)?.length).toBe(2);
+  });
+
+  it("does not falsely redact non-name capitalized phrases", () => {
+    const input = "We sent the request to General Hospital in Phoenix Arizona for Dr. Chen";
+    const output = redactPII(input);
+    expect(output).toContain("General Hospital");
+    expect(output).toContain("Phoenix Arizona");
+    expect(output).not.toContain("[PATIENT NAME]");
+  });
+
+  it("redacts dynamically registered patient/caregiver names", () => {
+    const input = "Please coordinate with Alice Vance and Bob Carter";
+    // Before registering, they shouldn't be redacted (since they are not in defaults)
+    let output = redactPII(input);
+    expect(output).toContain("Alice Vance");
+    expect(output).toContain("Bob Carter");
+
+    registerKnownNames(["Alice Vance", "Bob Carter"]);
+    output = redactPII(input);
+    expect(output).not.toContain("Alice Vance");
+    expect(output).not.toContain("Bob Carter");
+    expect(output.match(/\[PATIENT NAME\]/g)?.length).toBe(2);
+  });
+});
+
+describe("hashTask", () => {
+  it("produces a deterministic SHA-256 hash", () => {
+    const task = "Refill Rosa Garcia's prescription";
+    const hash = hashTask(task);
+    expect(hash).toHaveLength(64);
+    expect(hash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("produces the same hash for the same input", () => {
+    const task = "Check spending for Rosa Garcia";
+    expect(hashTask(task)).toBe(hashTask(task));
+  });
+
+  it("produces different hashes for different inputs", () => {
+    expect(hashTask("Task A")).not.toBe(hashTask("Task B"));
+  });
+
+  it("logs a hash while redacting the patient name from the task", () => {
+    const task = "Rosa Garcia needs Metformin 500mg";
+    const hash = hashTask(task);
+    const redacted = redactPII(task);
+
+    expect(hash).toHaveLength(64);
+    expect(redacted).not.toContain("Rosa Garcia");
+    expect(redacted).not.toContain("Metformin 500mg");
+    expect(redacted).toContain("[PATIENT NAME]");
+    expect(redacted).toContain("[MEDICATION]");
+
+    const task2 = "Someone else needs something else";
+    expect(hashTask(task2)).not.toBe(hash);
   });
 });

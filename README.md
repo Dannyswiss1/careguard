@@ -174,6 +174,53 @@ docker compose up
 
 The default `docker-compose.yml` builds the production-shape multi-stage images. The auto-loaded `docker-compose.override.yml` swaps the `server` and `dashboard` services for hot-reload dev mode.
 
+See [docs/observability/health-checks.md](docs/observability/health-checks.md) for the `/health` and `/ready` response schemas and what each dependency check means.
+
+For a symptom-to-resolution index (stuck agent spinner, repeated 402s, blank wallet balance, dashboard "Disconnected", startup hangs on Horizon, missing env), see [docs/troubleshooting.md](docs/troubleshooting.md).
+
+---
+
+## API Documentation
+
+The OpenAPI 3.1 spec is rendered as an interactive reference by the unified server:
+
+| What | Local | Production |
+|------|-------|------------|
+| Interactive reference | <http://localhost:3000/docs> | <https://api.careguard.xyz/docs> |
+| Raw spec | <http://localhost:3000/openapi.yml> | <https://api.careguard.xyz/openapi.yml> |
+
+The spec is generated (`npm run gen-openapi`), never hand-edited, and validated in
+CI (`npm run validate:openapi`). See [docs/api/README.md](docs/api/README.md) for the
+hosting setup, CI validation, and how the x402 `X-PAYMENT` auth scheme works.
+
+---
+
+## Running Tests
+
+```bash
+# Install dependencies (if not already done)
+npm install --legacy-peer-deps
+cd dashboard && npm install --legacy-peer-deps && cd ..
+
+# Run all tests (root backend + dashboard)
+npm run test:all
+
+# Watch mode
+npm run test:watch
+
+# Run tests with coverage
+npm test -- --coverage
+```
+
+Tests are organized in two workspaces:
+
+- **Root workspace** – backend tests for `agent/`, `services/`, `shared/`, `scripts/` (Node environment)
+- **Dashboard workspace** – frontend tests for `dashboard/src/` (jsdom environment via `dashboard/vitest.config.ts`)
+
+Shared test helpers (environment scrubber, fetch mock, Horizon mock) live in `tests/setup.ts`.
+
+> **Branch protection:** The `main` branch requires the CI check (`ci`) to pass before merging. Ensure all typecheck, lint, and test steps are green on your PR.
+
 ---
 
 ## Verified results
@@ -190,6 +237,8 @@ From a real end-to-end test on Stellar testnet:
 | Stellar transactions | All verifiable on [stellar.expert](https://stellar.expert/explorer/testnet) |
 
 **Cost breakdown:** 10 price queries @ $0.002 = $0.02, 1 drug interaction check @ $0.001 = $0.001, 1 bill audit @ $0.01 = $0.01. Total: $0.030 in autonomous AI agent operational costs.
+
+For detailed cost analysis, per-operation breakdown, and cost estimation worksheets, see [Cost Estimation Guide](docs/cost-estimation.md).
 
 ---
 
@@ -235,7 +284,7 @@ careguard/
 │   └── types.ts           # Shared TypeScript types
 ├── scripts/
 │   └── setup-wallets.ts   # Testnet wallet creation + USDC trustlines
-├── data/                  # Persisted spending data + orders
+├── data/                  # Local working directory (see note below)
 ├── .env.example           # Environment variable template
 ├── QUICKSTART.md          # Setup guide
 ├── docs/                  # Architecture, policy, API docs, and guides

@@ -11,20 +11,38 @@ interface EnvVar {
   files: string[];
 }
 
+// Wallet key-pair halves that `npm run setup` (scripts/setup-wallets.ts) prints
+// for every wallet in WALLET_NAMES, documented here for operators to paste the
+// full pair into .env, even though only one half of each pair is ever read via
+// process.env at runtime (e.g. recipient wallets only need their PUBLIC_KEY;
+// the app never loads their SECRET_KEY, and the agent's own PUBLIC_KEY is
+// derived from AGENT_SECRET_KEY rather than read separately).
+const DOCUMENTATION_ONLY_VARS = new Set([
+  'STELLAR_RPC_URL',
+  'AGENT_PUBLIC_KEY',
+  'CAREGIVER_SECRET_KEY',
+  'CAREGIVER_PUBLIC_KEY',
+  'PHARMACY_1_SECRET_KEY',
+  'PHARMACY_2_SECRET_KEY',
+  'PHARMACY_3_SECRET_KEY',
+  'PHARMACY_3_PUBLIC_KEY',
+  'BILL_PROVIDER_SECRET_KEY',
+]);
+
 async function extractEnvVarsFromExample(): Promise<Map<string, EnvVar>> {
   const envExamplePath = path.join(process.cwd(), '.env.example');
   const content = await fs.readFile(envExamplePath, 'utf-8');
   const lines = content.split('\n');
-  
+
   const envVars = new Map<string, EnvVar>();
-  
+
   lines.forEach((line, index) => {
     // Match lines like: VAR_NAME=value or # VAR_NAME=value
     const match = line.match(/^#?\s*([A-Z_][A-Z0-9_]*)=/);
     if (match) {
       const varName = match[1];
-      // Skip common meta variables
-      if (!['NODE_ENV', 'PORT', 'HOST'].includes(varName)) {
+      // Skip common meta variables and documented-but-intentionally-unread vars
+      if (!['NODE_ENV', 'PORT', 'HOST'].includes(varName) && !DOCUMENTATION_ONLY_VARS.has(varName)) {
         envVars.set(varName, {
           name: varName,
           line: index + 1,
@@ -34,13 +52,13 @@ async function extractEnvVarsFromExample(): Promise<Map<string, EnvVar>> {
       }
     }
   });
-  
+
   return envVars;
 }
 
 async function searchCodebaseForEnvVars(envVars: Map<string, EnvVar>): Promise<void> {
   const files = await glob('**/*.{ts,js,tsx,jsx}', {
-    ignore: ['node_modules/**', 'dist/**', '.next/**', 'scripts/check-env-vars.ts'],
+    ignore: ['**/node_modules/**', '**/dist/**', '**/.next/**', 'scripts/check-env-vars.ts'],
   });
   
   for (const file of files) {

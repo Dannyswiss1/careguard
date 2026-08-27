@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import request from 'supertest';
 import { app } from '../../server.ts';
 
-const auth = (req: any) => req.set('Authorization', 'Bearer test-caregiver-token');
+const auth = (req: any) => req.set('Authorization', 'Bearer test-agent-api-key');
 
 describe('Transaction Pagination', () => {
   beforeEach(async () => {
@@ -30,7 +30,15 @@ describe('Transaction Pagination', () => {
       .expect(200);
 
     expect(response.body.pagination.limit).toBe(10);
-    expect(response.body.transactions).toHaveLength.lessThanOrEqual(10);
+    expect(response.body.transactions.length).toBeLessThanOrEqual(10);
+  });
+
+  it('should return zero transactions for an explicit limit=0 (issue #1073)', async () => {
+    const response = await auth(request(app).get('/agent/transactions?limit=0'))
+      .expect(200);
+
+    expect(response.body.pagination.limit).toBe(0);
+    expect(response.body.transactions).toEqual([]);
   });
 
   it('should respect offset parameter', async () => {

@@ -1,16 +1,18 @@
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import { toast } from "sonner";
 import type { BillAuditResult, DrugInteractionResult, PharmacyCompareResult, SpendingData, Transaction, DisputeLetter } from "../lib/types";
 import { DEFAULT_PDF_THEME, type PdfTheme } from "../lib/pdf-theme";
 import type { RecipientProfile } from "../lib/types";
+import { TX_HASH_DISPLAY_LENGTH, truncateTransactionHash } from "../lib/tx-hash";
 
 type AutoTableDoc = jsPDF & { lastAutoTable?: { finalY: number } };
 
-function formatTxHashDisplay(hash?: string): { display: string; decodeFailed: boolean } {
+export function formatTxHashDisplay(hash?: string): { display: string; decodeFailed: boolean } {
   if (!hash) return { display: "-", decodeFailed: false };
 
   if (hash.length === 64 && /^[0-9a-f]{64}$/i.test(hash)) {
-    return { display: `${hash.slice(0, 16)}...`, decodeFailed: false };
+    return { display: truncateTransactionHash(hash), decodeFailed: false };
   }
 
   if (hash.length > 64) {
@@ -18,16 +20,18 @@ function formatTxHashDisplay(hash?: string): { display: string; decodeFailed: bo
       const decoded = JSON.parse(atob(hash)) as Record<string, unknown>;
       const extracted = (decoded.transaction || decoded.reference || decoded.hash) as unknown;
       if (typeof extracted === "string") {
-        const trimmed = extracted.length > 16 ? `${extracted.slice(0, 16)}...` : extracted;
+        const trimmed = extracted.length > TX_HASH_DISPLAY_LENGTH
+          ? truncateTransactionHash(extracted)
+          : extracted;
         return { display: trimmed, decodeFailed: false };
       }
-      return { display: `${hash.slice(0, 16)}... ?`, decodeFailed: true };
+      return { display: `${truncateTransactionHash(hash)} ?`, decodeFailed: true };
     } catch {
-      return { display: `${hash.slice(0, 16)}... ?`, decodeFailed: true };
+      return { display: `${truncateTransactionHash(hash)} ?`, decodeFailed: true };
     }
   }
 
-  return { display: `${hash.slice(0, 16)}... ?`, decodeFailed: true };
+  return { display: `${truncateTransactionHash(hash)} ?`, decodeFailed: true };
 }
 
 function formatRecipient(recipient: RecipientProfile): string {
@@ -85,7 +89,14 @@ export function downloadBillAuditPDF(
     ? `Patient: ${recipientLabel} | Facility: ${recipient.facility || "N/A"} | ${filteredItems.length} of ${allItems.length} items shown — errors only`
     : `Patient: ${recipientLabel} | Facility: ${recipient.facility || "N/A"}`;
 
-  const doc: AutoTableDoc = new jsPDF();
+  const requestId = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+  let doc: AutoTableDoc;
+  try {
+    doc = new jsPDF();
+  } catch (err) {
+    toast.error(`Couldn't generate PDF — try again (Req ID: ${requestId})`);
+    return;
+  }
   doc.setProperties({
     title: "CareGuard Medical Bill Audit Report",
     subject: `Bill audit for ${recipient.name}`,
@@ -150,14 +161,36 @@ export function downloadBillAuditPDF(
     },
   });
 
-  // Recommendation
+  // Recommendation — split so jsPDF can measure line count for page-break logic.
+  // maxWidth option on doc.text() wraps visually but doesn't let us count lines,
+  // so use splitTextToSize and handle overflow explicitly (Issue #227).
+  const REC_MAX_WIDTH = 182;
+  const REC_LINE_HEIGHT = 5; // mm at fontSize 9
+  const PAGE_BOTTOM = 275;  // leave room above footer
+
   const finalY = doc.lastAutoTable?.finalY || 200;
+  const recLines: string[] = doc.splitTextToSize(auditResult.recommendation || "", REC_MAX_WIDTH);
+  const recStartY = finalY + 8;
+
   doc.setFontSize(9);
   doc.setTextColor(15, 23, 42);
-  doc.text(auditResult.recommendation || "", 14, finalY + 8, { maxWidth: 180 });
+
+  if (recStartY + recLines.length * REC_LINE_HEIGHT > PAGE_BOTTOM) {
+    doc.addPage();
+    addHeader(doc, "Medical Bill Audit Report (cont.)", subtitle, theme);
+    doc.setFontSize(9);
+    doc.setTextColor(15, 23, 42);
+    doc.text(recLines, 14, 58);
+  } else {
+    doc.text(recLines, 14, recStartY);
+  }
 
   addFooter(doc);
-  doc.save("careguard-bill-audit-report.pdf");
+  try {
+    doc.save("careguard-bill-audit-report.pdf");
+  } catch (err) {
+    toast.error(`Couldn't generate PDF — try again (Req ID: ${requestId})`);
+  }
 }
 
 export function downloadMedicationPDF(
@@ -170,7 +203,14 @@ export function downloadMedicationPDF(
     age: 78,
     facility: "General Hospital",
   };
-  const doc: AutoTableDoc = new jsPDF();
+  const requestId = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+  let doc: AutoTableDoc;
+  try {
+    doc = new jsPDF();
+  } catch (err) {
+    toast.error(`Couldn't generate PDF — try again (Req ID: ${requestId})`);
+    return;
+  }
   doc.setProperties({
     title: "CareGuard Medication Price Comparison Report",
     subject: `Medication comparison for ${recipient.name}`,
@@ -245,7 +285,11 @@ export function downloadMedicationPDF(
   }
 
   addFooter(doc);
-  doc.save("careguard-medication-report.pdf");
+  try {
+    doc.save("careguard-medication-report.pdf");
+  } catch (err) {
+    toast.error(`Couldn't generate PDF — try again (Req ID: ${requestId})`);
+  }
 }
 
 export function downloadTransactionPDF(
@@ -259,7 +303,14 @@ export function downloadTransactionPDF(
     age: 78,
     facility: "General Hospital",
   };
-  const doc: AutoTableDoc = new jsPDF();
+  const requestId = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+  let doc: AutoTableDoc;
+  try {
+    doc = new jsPDF();
+  } catch (err) {
+    toast.error(`Couldn't generate PDF — try again (Req ID: ${requestId})`);
+    return;
+  }
   doc.setProperties({
     title: "CareGuard Transaction Report",
     subject: `Transactions for ${recipient.name}`,
@@ -294,14 +345,19 @@ export function downloadTransactionPDF(
     startY: y,
     head: [["Time", "Type", "Description", "Amount", "Status", "Stellar Tx"]],
     body: transactions.map((tx) => {
-      const { display } = formatTxHashDisplay(tx.stellarTxHash);
+      const { display, decodeFailed } = formatTxHashDisplay(tx.stellarTxHash);
       return [
         new Date(tx.timestamp).toLocaleString(),
         tx.type,
         tx.description.slice(0, 40),
         `$${tx.amount < 0.01 ? tx.amount.toFixed(4) : tx.amount.toFixed(2)}`,
         tx.status,
-        display,
+        decodeFailed
+          ? {
+              content: display,
+              styles: { fontStyle: "italic", textColor: [185, 28, 28] },
+            }
+          : display,
       ];
     }),
     headStyles: { fillColor: theme.headerColor, fontSize: 7 },
@@ -310,7 +366,11 @@ export function downloadTransactionPDF(
   });
 
   addFooter(doc);
-  doc.save("careguard-transaction-report.pdf");
+  try {
+    doc.save("careguard-transaction-report.pdf");
+  } catch (err) {
+    toast.error(`Couldn't generate PDF — try again (Req ID: ${requestId})`);
+  }
 }
 
 export function downloadDisputeLetterPDF(
@@ -318,7 +378,14 @@ export function downloadDisputeLetterPDF(
   options?: { theme?: PdfTheme }
 ) {
   const theme = options?.theme ?? DEFAULT_PDF_THEME;
-  const doc = new jsPDF();
+  const requestId = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+  let doc: jsPDF;
+  try {
+    doc = new jsPDF();
+  } catch (err) {
+    toast.error(`Couldn't generate PDF — try again (Req ID: ${requestId})`);
+    return;
+  }
   doc.setProperties({
     title: `CareGuard Dispute Letter — ${letter.recipientName}`,
     subject: `Bill dispute for ${letter.recipientName}`,
@@ -350,7 +417,11 @@ export function downloadDisputeLetterPDF(
   }
 
   addFooter(doc);
-  doc.save(`careguard-dispute-letter-${letter.billId}.pdf`);
+  try {
+    doc.save(`careguard-dispute-letter-${letter.billId}.pdf`);
+  } catch (err) {
+    toast.error(`Couldn't generate PDF — try again (Req ID: ${requestId})`);
+  }
 }
 
 export function downloadDisputeLetterEmail(letter: DisputeLetter): string {

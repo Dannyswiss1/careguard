@@ -3,8 +3,8 @@ services:
     name: careguard-api
     runtime: node
     plan: free
-    buildCommand: npm ci
-    startCommand: node --experimental-strip-types --experimental-transform-types --no-warnings server.ts
+    buildCommand: npm ci && npm run build
+    startCommand: node dist/server.js
     healthCheckPath: /health
     envVars:
       - key: NODE_VERSION
@@ -15,6 +15,9 @@ services:
         value: testnet
       - key: STELLAR_RPC_URL
         value: https://soroban-testnet.stellar.org
+      # Secret keys use sync: false to keep sensitive credentials out of version control.
+      # Changes in Render dashboard require SIGHUP signal or manual restart.
+      # See docs/runbooks/rotate-render-secrets.md for rotation procedures.
       - key: AGENT_SECRET_KEY
         sync: false
       - key: AGENT_PUBLIC_KEY
@@ -69,3 +72,5 @@ services:
         value: http://localhost:3004
       - key: PHARMACY_PAYMENT_URL
         value: http://localhost:3004
+      - key: MAX_SINGLE_TX_USDC
+        value: "100"

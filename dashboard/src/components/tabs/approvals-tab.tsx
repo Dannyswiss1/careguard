@@ -1,68 +1,35 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { Btn } from "../primitives/btn";
-import { Card } from "../primitives/card";
+import { useEffect, useState } from "react";
 import type { Transaction } from "../types";
+import { formatDateTime, type Locale } from "../../i18n";
 
-const AGENT_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3004";
 
 export interface ApprovalsTabProps {
   agentConnected: boolean;
+  approvals: Transaction[];
+  loading: boolean;
+  onApprove: (txId: string) => Promise<void>;
+  onCancel: (txId: string) => Promise<void>;
+  // #1139 — defaults to "en" so existing callers that don't pass a locale
+  // render identically to before this change.
+  locale?: Locale;
 }
 
-export function ApprovalsTab({ agentConnected }: ApprovalsTabProps) {
-  const [approvals, setApprovals] = useState<Transaction[]>([]);
-  const [loading, setLoading] = useState(false);
+export function ApprovalsTab({
+  agentConnected,
+  approvals,
+  loading,
+  onApprove,
+  onCancel,
+  locale = "en",
+}: ApprovalsTabProps) {
   const [, setTick] = useState(0);
 
-  const fetchApprovals = async () => {
-    try {
-      const res = await fetch(`${AGENT_URL}/agent/pending-approvals`);
-      if (!res.ok) return;
-      const data = await res.json();
-      setApprovals(data.approvals || []);
-    } catch {}
-  };
-
   useEffect(() => {
-    fetchApprovals();
-    fetchApprovals();
-    const i = setInterval(fetchApprovals, 5000);
     const t = setInterval(() => setTick((s) => s + 1), 1000);
-    return () => {
-      clearInterval(i);
-      clearInterval(t);
-    };
+    return () => clearInterval(t);
   }, []);
-
-  const handleApprove = async (txId: string) => {
-    setLoading(true);
-    try {
-      const res = await fetch(`${AGENT_URL}/agent/approvals/${txId}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ approve: true }),
-      });
-      if (res.ok) fetchApprovals();
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleCancel = async (txId: string) => {
-    setLoading(true);
-    try {
-      const res = await fetch(`${AGENT_URL}/agent/approvals/${txId}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ approve: false }),
-      });
-      if (res.ok) fetchApprovals();
-    } finally {
-      setLoading(false);
-    }
-  };
 
   return (
     <div
@@ -98,7 +65,7 @@ export function ApprovalsTab({ agentConnected }: ApprovalsTabProps) {
                       Amount: ${tx.amount.toFixed(2)} | Category: {tx.category}
                     </div>
                     <div className="text-xs text-slate-400 mt-1">
-                      {new Date(tx.timestamp).toLocaleString()}
+                      {formatDateTime(new Date(tx.timestamp), locale)}
                     </div>
                     {tx.pendingUntil && (
                       <div className="text-xs text-amber-600 mt-1">
@@ -106,7 +73,15 @@ export function ApprovalsTab({ agentConnected }: ApprovalsTabProps) {
                           try {
                             const ms = new Date(tx.pendingUntil).getTime() - Date.now();
                             const sec = Math.max(0, Math.ceil(ms / 1000));
-                            return `Auto-approve in ${sec}s`;
+                            const announcedSec = sec <= 5 ? sec : Math.ceil(sec / 10) * 10;
+                            return (
+                              <>
+                                <span aria-hidden="true">Auto-approve in {sec}s</span>
+                                <span className="sr-only" aria-live="polite">
+                                  Auto-approve in {announcedSec} seconds
+                                </span>
+                              </>
+                            );
                           } catch {
                             return null;
                           }
@@ -116,14 +91,14 @@ export function ApprovalsTab({ agentConnected }: ApprovalsTabProps) {
                   </div>
                   <div className="flex gap-2">
                     <button
-                      onClick={() => handleApprove(tx.id)}
+                      onClick={() => onApprove(tx.id)}
                       disabled={loading}
                       className="px-3 py-1.5 bg-green-600 text-white text-xs font-medium rounded-lg hover:bg-green-700 disabled:opacity-50 cursor-pointer"
                     >
                       Approve
                     </button>
                     <button
-                      onClick={() => handleCancel(tx.id)}
+                      onClick={() => onCancel(tx.id)}
                       disabled={loading}
                       className="px-3 py-1.5 bg-red-600 text-white text-xs font-medium rounded-lg hover:bg-red-700 disabled:opacity-50 cursor-pointer"
                     >

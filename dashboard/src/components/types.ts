@@ -2,14 +2,26 @@ import type { SpendingData, Transaction, AuditLogEvent } from "../lib/types";
 
 export type { SpendingData, Transaction, AuditLogEvent };
 
+export interface AgentEvent {
+  kind: string;
+}
+
+export interface AgentLlmError {
+  message: string;
+  code?: string;
+  iteration: number;
+}
+
 export interface AgentResult {
   response: string;
-  toolCalls: Array<{ tool: string; input: unknown; result: any }>;
+  toolCalls: Array<{ id?: string; tool: string; input: unknown; result: any }>;
   spending: SpendingData;
   llmUsage?: {
     promptTokens: number;
     completionTokens: number;
   };
+  events?: AgentEvent[];
+  error?: AgentLlmError;
 }
 
 export interface AgentInfo {
@@ -24,6 +36,7 @@ export interface AgentLogEntry {
   id: string;
   timestamp: number;
   message: string;
+  errorDetail?: string;
 }
 
 export interface PaginationData {

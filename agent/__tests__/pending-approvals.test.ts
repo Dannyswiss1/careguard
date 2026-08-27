@@ -11,8 +11,11 @@ vi.mock('dotenv/config', () => ({}));
 vi.mock('fs', () => ({
   readFileSync: vi.fn().mockReturnValue('{}'),
   writeFileSync: vi.fn(),
+  appendFileSync: vi.fn(),
   existsSync: vi.fn().mockReturnValue(false),
   mkdirSync: vi.fn(),
+  readdirSync: vi.fn().mockReturnValue([{ name: 'rosa', isDirectory: () => true }]),
+  renameSync: vi.fn(),
 }));
 vi.mock('@stellar/stellar-sdk', () => ({
   Keypair: { fromSecret: vi.fn().mockReturnValue({ publicKey: () => 'GPUB123', sign: vi.fn() }) },
@@ -28,6 +31,7 @@ vi.mock('@stellar/mpp/charge/client', () => ({ stellar: vi.fn().mockImplementati
 vi.mock('mppx/client', () => ({ Mppx: { create: vi.fn().mockReturnValue({ fetch: mockMppFetch }) } }));
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { readdirSync } from 'fs';
 import {
   payForMedication,
   setSpendingPolicy,
@@ -36,11 +40,12 @@ import {
   approvePendingTransaction,
   processPendingTransactions,
   getSpendingTracker,
+  setCurrentRecipient,
 } from '../tools.ts';
 
 const DEFAULT_POLICY = {
   dailyLimit: 100,
-  monthlyLimit: 500,
+  monthlyLimit: 800,
   medicationMonthlyBudget: 300,
   billMonthlyBudget: 500,
   approvalThreshold: 75,
@@ -48,8 +53,10 @@ const DEFAULT_POLICY = {
 
 beforeEach(() => {
   mockMppFetch.mockReset();
+  setCurrentRecipient('rosa');
   resetSpendingTracker();
   setSpendingPolicy({ ...DEFAULT_POLICY });
+  (readdirSync as any).mockReturnValue([{ name: 'rosa', isDirectory: () => true }]);
 });
 
 describe('Pending approvals flows', () => {
@@ -101,5 +108,40 @@ describe('Pending approvals flows', () => {
     const tracker = getSpendingTracker();
     const found = tracker.transactions.find((t: any) => t.id === tx.id);
     expect(found.status).toBe('completed');
+  });
+
+  it('auto-approves expired pending transactions for every recipient, not just the current one', async () => {
+    setSpendingPolicy({ ...DEFAULT_POLICY, holdTimeSeconds: 0 });
+    mockMppFetch.mockResolvedValueOnce({ json: async () => ({ success: true, order: { id: 'o-rosa' } }), headers: { get: () => null } });
+    const rRosa = await payForMedication('p1', 'Pharma', 'Drug', 80);
+    const txRosa = (rRosa as any).transaction;
+    expect(txRosa.status).toBe('pending');
+
+    setCurrentRecipient('jose');
+    setSpendingPolicy({ ...DEFAULT_POLICY, holdTimeSeconds: 0 });
+    mockMppFetch.mockResolvedValueOnce({ json: async () => ({ success: true, order: { id: 'o-jose' } }), headers: { get: () => null } });
+    const rJose = await payForMedication('p2', 'Pharma2', 'Drug2', 90);
+    const txJose = (rJose as any).transaction;
+    expect(txJose.status).toBe('pending');
+
+    (readdirSync as any).mockReturnValue([
+      { name: 'rosa', isDirectory: () => true },
+      { name: 'jose', isDirectory: () => true },
+    ]);
+
+    // The scanner must not depend on which recipient happens to be "current".
+    setCurrentRecipient('someone-else');
+
+    await processPendingTransactions();
+
+    setCurrentRecipient('rosa');
+    expect(
+      getSpendingTracker().transactions.find((t: any) => t.id === txRosa.id).status,
+    ).toBe('completed');
+
+    setCurrentRecipient('jose');
+    expect(
+      getSpendingTracker().transactions.find((t: any) => t.id === txJose.id).status,
+    ).toBe('completed');
   });
 });
