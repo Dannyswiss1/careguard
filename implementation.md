@@ -226,3 +226,88 @@ To avoid refactoring any existing call sites across `agent/tools.ts`, `agent/ser
   - Test the `NotificationChannelRegistry` and `notify()` dispatcher using mock channels.
   - Verify `Promise.allSettled()` isolation (e.g. verifying that `notify()` succeeds even if 1 channel throws an exception).
 
+---
+
+# RFC: Horizontally-Scalable Redis-Backed `AgentQueue` (Issue #1445)
+
+## Executive Summary
+
+This RFC addresses issue #1445 by proposing an architectural design to scale [`shared/agent-queue.ts`](file:///c:/Users/PAB-NETWORK/Documents/Grantfox/careguard/shared/agent-queue.ts) across multi-instance deployments using Redis.
+
+Currently, `AgentQueue` maintains `activeCount` and `queue` as in-process private fields on a single module-level singleton. In multi-replica deployments (e.g. horizontally scaled Docker/Render containers), concurrency (`AGENT_CONCURRENCY`) and queue capacity (`MAX_QUEUE_SIZE`) are enforced per-process rather than cluster-wide. Running 2 replicas silently doubles allowed concurrent execution and queue limits.
+
+This proposal transitions `AgentQueue` to a distributed, Redis-backed concurrency and queue control mechanism built on top of [`shared/redis.ts`](file:///c:/Users/PAB-NETWORK/Documents/Grantfox/careguard/shared/redis.ts).
+
+---
+
+## 1. Multi-Replica Failure Analysis
+
+### Current In-Process State Limitations
+1. **Concurrency Multiplying**: With `AGENT_CONCURRENCY=1`, running $N$ instance replicas allows up to $N$ concurrent LLM agent executions simultaneously, exceeding downstream rate limits and API budgets.
+2. **Queue Capacity Inflation**: With `MAX_QUEUE_SIZE=10`, $N$ replicas allow up to $10 \times N$ queued jobs across the cluster before returning HTTP 429.
+3. **Metric Splitting**: `agentQueueDepth` and `agentWaitingJobs` Prometheus metrics reflect only the local process state, rendering cluster-wide observability inaccurate.
+
+---
+
+## 2. Distributed Redis-Backed Queue & 429 Contract
+
+### Architectural Design
+
+The Redis-backed design uses atomic Lua scripts and key structures in [`shared/redis.ts`](file:///c:/Users/PAB-NETWORK/Documents/Grantfox/careguard/shared/redis.ts) to enforce cluster-wide limits:
+
+```
+Keys:
+- agent_queue:active   (Sorted Set / Set holding active job IDs)
+- agent_queue:waiting  (List / Redis Queue holding waiting job IDs)
+- agent_queue:lock:<id> (TTL lock key per executing job)
+```
+
+### Preserving `enqueue()` and HTTP 429 Contract
+1. **Capacity Evaluation**:
+   When `enqueue()` is called:
+   - Check total cluster waiting count ($L_{\text{wait}}$) via Redis `LLEN agent_queue:waiting`.
+   - Check active cluster concurrency count ($C_{\text{active}}$) via Redis `SCARD agent_queue:active`.
+2. **HTTP 429 Threshold**:
+   - If $L_{\text{wait}} \ge \text{MAX\_QUEUE\_SIZE}$, throw an Error with properties `status = 429` and `retryAfter = 10`.
+   - The Express route handler in [`agent/server.ts`](file:///c:/Users/PAB-NETWORK/Documents/Grantfox/careguard/agent/server.ts) catches this error and returns HTTP 429 with header `Retry-After: 10`.
+
+---
+
+## 3. Cluster-Wide Prometheus Gauge Metrics
+
+To ensure accurate Prometheus metrics across replicas:
+- **`agentQueueDepth`**: Set to $C_{\text{active}}$ (active cluster jobs) obtained via `SCARD agent_queue:active` or local active polling.
+- **`agentWaitingJobs`**: Set to $L_{\text{wait}}$ (waiting cluster jobs) obtained via `LLEN agent_queue:waiting`.
+- Metrics update atomically whenever a job acquires execution slot or finishes execution.
+
+---
+
+## 4. Redis Unavailability & Fallback Behavior
+
+In alignment with CareGuard's degraded resilience design (see [`docs/runbooks/redis-down.md`](file:///c:/Users/PAB-NETWORK/Documents/Grantfox/careguard/docs/runbooks/redis-down.md)):
+- If `REDIS_URL` is unset or Redis is unreachable, `AgentQueue` gracefully degrades to the current **in-process Map/Array queue fallback**.
+- A warning log (`"REDIS_URL unavailable — degrading AgentQueue to in-process local state"`) is emitted.
+- Job processing remains 100% functional on single-instance setups without throwing fatal crashes.
+
+---
+
+## 5. Time & Space Complexity Analysis
+
+- **Time Complexity**:
+  - `enqueue()` atomic check & push: $\mathcal{O}(1)$ Redis `EVAL` / command latency.
+  - Dequeue / Slot release: $\mathcal{O}(1)$ atomic removal from active set.
+- **Space Complexity**:
+  - $\mathcal{O}(\text{MAX\_QUEUE\_SIZE} + \text{AGENT\_CONCURRENCY})$ memory footprint in Redis.
+
+---
+
+## 6. Migration Plan & Rollback Path
+
+1. **Phase 1: Feature Flag Integration**:
+   - Introduce `AGENT_QUEUE_REDIS_ENABLED` flag (default `true` when `REDIS_URL` is configured).
+2. **Phase 2: Transparent Backward Compatibility**:
+   - Preserve `agentQueue.enqueue(execute)` signature so no changes are needed in [`agent/server.ts`](file:///c:/Users/PAB-NETWORK/Documents/Grantfox/careguard/agent/server.ts).
+3. **Rollback Path**:
+   - If Redis issues occur in production, setting `AGENT_QUEUE_REDIS_ENABLED=false` immediately reverts execution to the in-memory queue fallback without requiring code redeployments.
+
+
