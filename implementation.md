@@ -104,3 +104,125 @@ export interface WebhookVerificationConfig {
    - `shared/__tests__/verify-webhook.test.ts` remains in `shared/__tests__/` and will be augmented to cover both generic primitives (`verifyHmacSignature`) and standard middleware behavior.
 3. **Documentation:**
    - Runbooks [`webhook-secret-rotation.md`](file:///c:/Users/PAB-NETWORK/Documents/Grantfox/careguard/docs/runbooks/webhook-secret-rotation.md) and [`redis-down.md`](file:///c:/Users/PAB-NETWORK/Documents/Grantfox/careguard/docs/runbooks/redis-down.md) maintain exact file path alignment.
+
+---
+
+# RFC: Pluggable Notification Delivery-Channel Abstraction (Issue #1453)
+
+## Executive Summary
+
+This RFC addresses issue #1453 by proposing a clean architecture refactoring for [`shared/notifications.ts`](file:///c:/Users/PAB-NETWORK/Documents/Grantfox/careguard/shared/notifications.ts). 
+
+Currently, `shared/notifications.ts` mixes notification dispatching logic with inline channel implementations (Slack HTTP webhooks, Resend/Postmark email APIs, and Twilio SMS). As new channels or async delivery mechanisms are added, modifying `notifications.ts` creates high churn for all importing modules (such as [`agent/tools.ts`](file:///c:/Users/PAB-NETWORK/Documents/Grantfox/careguard/agent/tools.ts), [`agent/server.ts`](file:///c:/Users/PAB-NETWORK/Documents/Grantfox/careguard/agent/server.ts), and [`shared/wallet-balance.ts`](file:///c:/Users/PAB-NETWORK/Documents/Grantfox/careguard/shared/wallet-balance.ts)).
+
+This design extracts a pluggable `NotificationChannel` interface and a `ChannelRegistry`, transforming `notify()` into a thin, decoupled dispatcher.
+
+---
+
+## 1. Call Site & Delivery Mechanism Audit
+
+### Call Sites
+A search across the codebase identified the following operational call sites for `notify()`:
+
+| Call Site File | Trigger Context | Notification Level | Target Channel |
+|---|---|---|---|
+| [`agent/tools.ts`](file:///c:/Users/PAB-NETWORK/Documents/Grantfox/careguard/agent/tools.ts#L80) | Spending policy limit warning/exceeded | `warning` / `critical` | Default (`all`) |
+| [`agent/tools.ts`](file:///c:/Users/PAB-NETWORK/Documents/Grantfox/careguard/agent/tools.ts) | Medication adherence missed/flagged alerts | `warning` | Default (`all`) |
+| [`shared/wallet-balance.ts`](file:///c:/Users/PAB-NETWORK/Documents/Grantfox/careguard/shared/wallet-balance.ts) | Low Stellar wallet balance alert | `warning` / `critical` | Default (`all`) |
+| [`agent/server.ts`](file:///c:/Users/PAB-NETWORK/Documents/Grantfox/careguard/agent/server.ts#L325) | Caregiver agent pause/resume status events | `info` / `warning` | Default (`all`) |
+| [`docs/runbooks/wallet-low.md`](file:///c:/Users/PAB-NETWORK/Documents/Grantfox/careguard/docs/runbooks/wallet-low.md) | Documented operational alert trigger | `warning` | Default (`all`) |
+
+### Current Delivery Mechanisms
+Currently, [`shared/notifications.ts`](file:///c:/Users/PAB-NETWORK/Documents/Grantfox/careguard/shared/notifications.ts) contains monolithically coupled functions:
+- `sendSlack(n)`: Directly calls `fetch(SLACK_WEBHOOK_URL, ...)`
+- `sendEmail(n)`: Calls `fetch("https://api.resend.com/emails", ...)` or `fetch("https://api.postmarkapp.com/email", ...)`
+- `sendSms(n)`: Formats Basic Auth and calls `fetch("https://api.twilio.com/...", ...)`
+
+---
+
+## 2. Pluggable `NotificationChannel` Interface & Registry
+
+### Clean Architecture Abstraction
+
+```typescript
+export interface NotificationResult {
+  success: boolean;
+  channelName: string;
+  error?: string;
+  deliveredAt?: number;
+}
+
+export interface NotificationChannel {
+  /** Unique channel identifier (e.g., 'email', 'sms', 'slack'). */
+  name: string;
+
+  /** Evaluates whether environmental credentials for this channel are configured. */
+  isConfigured(): boolean;
+
+  /** Executes delivery of a notification payload. */
+  send(notification: Notification): Promise<NotificationResult>;
+}
+
+export class NotificationChannelRegistry {
+  private channels = new Map<string, NotificationChannel>();
+
+  register(channel: NotificationChannel): void {
+    this.channels.set(channel.name, channel);
+  }
+
+  get(name: string): NotificationChannel | undefined {
+    return this.channels.get(name);
+  }
+
+  getEnabledChannels(): NotificationChannel[] {
+    return Array.from(this.channels.values()).filter((c) => c.isConfigured());
+  }
+
+  clear(): void {
+    this.channels.clear();
+  }
+}
+```
+
+---
+
+## 3. Failure & Retry Handling
+
+To prevent transient HTTP failures (e.g. Resend rate limits or Slack 502s) from breaking business logic execution or blocking the AI Agent loop, failure handling is decoupled:
+
+1. **Non-Blocking Execution & Channel Isolation**:
+   - `notify()` executes delivery across selected channels concurrently via `Promise.allSettled()`.
+   - A failure in the Slack channel will never crash or abort email/SMS delivery.
+
+2. **Retry Policy**:
+   - Transient network/HTTP 5xx errors utilize exponential backoff with jitter up to a maximum attempt limit (e.g. 3 attempts, max 2000ms delay).
+   - Permanent 4xx errors (e.g., invalid phone number format or invalid API key) fail fast without retrying.
+
+3. **Time and Space Complexity**:
+   - **Time Complexity**: $\mathcal{O}(K)$ dispatch time for $K$ registered channels, executing in parallel $\mathcal{O}(\max_{k} T_k)$ total network latency.
+   - **Space Complexity**: $\mathcal{O}(K)$ auxiliary memory for in-flight channel promises and registry map storage.
+
+---
+
+## 4. Backwards-Compatible Migration Plan
+
+To avoid refactoring any existing call sites across `agent/tools.ts`, `agent/server.ts`, or `shared/wallet-balance.ts`:
+
+1. **Preserve `notify(n: Notification)` Signature**:
+   - The primary export `export async function notify(n: Notification): Promise<void>` remains intact.
+   - Callers continue passing `{ level, title, description, context, channel, ... }`.
+
+2. **Default Built-in Registrations**:
+   - The module instantiates a default global `NotificationChannelRegistry` pre-populated with `SlackChannel`, `EmailChannel`, and `SmsChannel`.
+   - Custom channels (e.g., Push notifications, PagerDuty, WhatsApp) can be registered at application boot without mutating core dispatching logic.
+
+---
+
+## 5. Testing Strategy
+
+- **Channel Unit Tests (`shared/__tests__/channels/*.test.ts`)**:
+  - Test individual channel formatting, environment variable validation (`isConfigured()`), payload construction, and provider-specific error handling.
+- **Dispatcher Unit Tests (`shared/__tests__/notifications.test.ts`)**:
+  - Test the `NotificationChannelRegistry` and `notify()` dispatcher using mock channels.
+  - Verify `Promise.allSettled()` isolation (e.g. verifying that `notify()` succeeds even if 1 channel throws an exception).
+
