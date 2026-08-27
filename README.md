@@ -190,16 +190,17 @@ hosting setup, CI validation, and how the x402 `X-PAYMENT` auth scheme works.
 
 ```bash
 # Install dependencies (if not already done)
-pnpm install
+npm install --legacy-peer-deps
+cd dashboard && npm install --legacy-peer-deps && cd ..
 
 # Run all tests (root backend + dashboard)
-pnpm test
+npm run test:all
 
 # Watch mode
-pnpm test:watch
+npm run test:watch
 
 # Run tests with coverage
-pnpm test -- --coverage
+npm test -- --coverage
 ```
 
 Tests are organized in two workspaces:
