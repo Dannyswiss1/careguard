@@ -54,8 +54,8 @@ export interface PharmacyAppOptions {
   enablePayments?: boolean;
 }
 
-function sendCrudNotFound(res: express.Response, message: string) {
-  res.status(404).json({ error: message });
+function sendCrudNotFound(res: express.Response, message: string, code: string = "NOT_FOUND") {
+  res.status(404).json({ error: message, code });
 }
 
 export function createPharmacyApp(options: PharmacyAppOptions) {
@@ -120,6 +120,7 @@ export function createPharmacyApp(options: PharmacyAppOptions) {
     if (!parsedBody.success) {
       res.status(400).json({
         error: parsedBody.error.issues[0]?.message ?? "Invalid drug payload",
+        code: "VALIDATION_INVALID_INPUT",
       });
       return;
     }
@@ -139,6 +140,7 @@ export function createPharmacyApp(options: PharmacyAppOptions) {
     if (!parsedBody.success) {
       res.status(400).json({
         error: parsedBody.error.issues[0]?.message ?? "Invalid drug payload",
+        code: "VALIDATION_INVALID_INPUT",
       });
       return;
     }
@@ -152,7 +154,7 @@ export function createPharmacyApp(options: PharmacyAppOptions) {
       ? req.params.drugName[0]
       : req.params.drugName;
     if (!pricingStore.deleteDrug(drugName)) {
-      sendCrudNotFound(res, `Drug not found: ${drugName}`);
+      sendCrudNotFound(res, `Drug not found: ${drugName}`, "NOT_FOUND_DRUG");
       return;
     }
 
@@ -165,6 +167,7 @@ export function createPharmacyApp(options: PharmacyAppOptions) {
       res.status(400).json({
         error:
           parsedBody.error.issues[0]?.message ?? "Invalid pharmacy payload",
+        code: "VALIDATION_INVALID_INPUT",
       });
       return;
     }
@@ -187,6 +190,7 @@ export function createPharmacyApp(options: PharmacyAppOptions) {
       res.status(400).json({
         error:
           parsedBody.error.issues[0]?.message ?? "Invalid pharmacy payload",
+        code: "VALIDATION_INVALID_INPUT",
       });
       return;
     }
@@ -202,7 +206,7 @@ export function createPharmacyApp(options: PharmacyAppOptions) {
       ? req.params.pharmacyId[0]
       : req.params.pharmacyId;
     if (!pricingStore.deletePharmacy(pharmacyId)) {
-      sendCrudNotFound(res, `Pharmacy not found: ${pharmacyId}`);
+      sendCrudNotFound(res, `Pharmacy not found: ${pharmacyId}`, "NOT_FOUND_PHARMACY");
       return;
     }
 
@@ -215,6 +219,7 @@ export function createPharmacyApp(options: PharmacyAppOptions) {
       res.status(400).json({
         error:
           parsedBody.error.issues[0]?.message ?? "Invalid pharmacy price payload",
+        code: "VALIDATION_INVALID_INPUT",
       });
       return;
     }
@@ -241,6 +246,7 @@ export function createPharmacyApp(options: PharmacyAppOptions) {
       res.status(400).json({
         error:
           parsedQuery.error.issues[0]?.message ?? "Invalid pharmacy query parameters",
+        code: "VALIDATION_INVALID_INPUT",
       });
       return;
     }
@@ -265,13 +271,20 @@ export function createPharmacyApp(options: PharmacyAppOptions) {
       );
     } catch (error) {
       pharmacyUnknownDrugTotal.inc({ drug });
-      res.status(404).json({ ok: false, reason: "NO_PRICES_FOUND" });
+      res.status(404).json({
+        error: `No pricing records found for drug: ${drug}`,
+        code: "NOT_FOUND_DRUG",
+      });
     }
   });
 
   app.use((err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
     if (err.type === "entity.too.large") {
-      return res.status(413).json({ error: "Request body too large", limit: err.limit });
+      return res.status(413).json({
+        error: "Request body too large",
+        code: "BODY_TOO_LARGE",
+        details: { limit: err.limit },
+      });
     }
     next(err);
   });

@@ -210,7 +210,10 @@ app.post("/bill/audit", (req, res, next) => {
   const items = req.body?.lineItems;
   if (Array.isArray(items) && items.length > BILL_AUDIT_MAX_ITEMS) {
     billAuditOversizedRejectionsTotal.inc();
-    res.status(400).json({ error: `lineItems exceeds max (${BILL_AUDIT_MAX_ITEMS})` });
+    res.status(400).json({
+      error: `lineItems exceeds max (${BILL_AUDIT_MAX_ITEMS})`,
+      code: "VALIDATION_ERROR",
+    });
     return;
   }
   next();
@@ -236,20 +239,26 @@ app.post("/bill/audit", (req, res) => {
     if (error instanceof BillAuditValidationError) {
       const validationError = error as BillAuditValidationError;
       res.status(400).json({
-        ok: false,
-        reason: validationError.code,
-        message: validationError.message,
-        issues: validationError.issues,
+        error: validationError.message,
+        code: validationError.code,
+        details: { issues: validationError.issues },
       });
     } else {
-      res.status(400).json({ ok: false, reason: "INVALID_REQUEST_BODY" });
+      res.status(400).json({
+        error: "Invalid request body",
+        code: "INVALID_REQUEST_BODY",
+      });
     }
   }
 });
 
 app.use((err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
   if (err.type === "entity.too.large") {
-    return res.status(413).json({ error: "Request body too large", limit: err.limit });
+    return res.status(413).json({
+      error: "Request body too large",
+      code: "BODY_TOO_LARGE",
+      details: { limit: err.limit },
+    });
   }
   next(err);
 });
