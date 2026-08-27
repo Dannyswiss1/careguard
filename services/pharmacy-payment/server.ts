@@ -22,6 +22,7 @@ import { applySecurityMiddleware } from "../../shared/security-middleware.ts";
 import { logger } from "../../shared/logger.ts";
 import { requestContextMiddleware } from "../../shared/request-context.ts";
 import { requestLoggerMiddleware } from "../../shared/request-logger.ts";
+import { gracefulShutdown } from "../../shared/graceful-shutdown.ts";
 import { sanitizeUserString } from "../../shared/sanitize.ts";
 import {
   MedicationOrderSchema,
@@ -250,15 +251,4 @@ export const server = app.listen(PORT, () => {
   logger.info({ port: PORT, network: NETWORK, recipient: RECIPIENT, currency: USDC_SAC_TESTNET }, "Pharmacy Payment Service (MPP Charge) started");
 });
 
-process.on("SIGTERM", () => {
-  logger.info("SIGTERM received. Draining server...");
-  isDraining = true;
-  server.close(() => {
-    logger.info("Server closed. Exiting process.");
-    process.exit(0);
-  });
-  setTimeout(() => {
-    logger.error("Graceful shutdown timeout. Forcing exit.");
-    process.exit(1);
-  }, 30000);
-});
+gracefulShutdown({ server, onDrainStart: () => { isDraining = true; } });
