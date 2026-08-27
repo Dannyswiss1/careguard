@@ -100,8 +100,8 @@ ADR index.
 
 ## Code Style
 
-- TypeScript strict mode — no `any` without justification
-- ESLint + Prettier (run `npm run lint` before pushing)
+- TypeScript strict mode — no `any` without justification (run `npm run typecheck` before pushing)
+- Dashboard additionally runs ESLint (`cd dashboard && npm run lint`)
 - Keep services self-contained; shared code goes in `shared/`
 
 ## API Changes

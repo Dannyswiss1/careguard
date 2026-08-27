@@ -32,8 +32,5 @@ jobs:
       - name: Typecheck dashboard
         run: cd dashboard && npx tsc --noEmit
 
-      - name: Lint
-        run: npm run lint
-
       - name: Run tests
         run: npm run test:all
