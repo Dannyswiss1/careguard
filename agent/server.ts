@@ -23,6 +23,7 @@ import { rateLimiters } from "../shared/rate-limit.ts";
 import { agentQueue } from "../shared/agent-queue.ts";
 import { requestContextMiddleware } from "../shared/request-context.ts";
 import { requestLoggerMiddleware } from "../shared/request-logger.ts";
+import { gracefulShutdown } from "../shared/graceful-shutdown.ts";
 import {
   metricsHandler,
   agentRunsTotal,
@@ -656,15 +657,4 @@ const server = app.listen(PORT, async () => {
   await verifyWallet();
 });
 
-process.on("SIGTERM", () => {
-  logger.info("SIGTERM received. Draining server...");
-  isDraining = true;
-  server.close(() => {
-    logger.info("Server closed. Exiting process.");
-    process.exit(0);
-  });
-  setTimeout(() => {
-    logger.error("Graceful shutdown timeout. Forcing exit.");
-    process.exit(1);
-  }, 30000);
-});
+gracefulShutdown({ server, onDrainStart: () => { isDraining = true; } });

@@ -44,6 +44,7 @@ import { initSentry } from "./shared/sentry.ts";
 // Observability
 import { requestContextMiddleware } from "./shared/request-context.ts";
 import { requestLoggerMiddleware } from "./shared/request-logger.ts";
+import { gracefulShutdown } from "./shared/graceful-shutdown.ts";
 import {
   metricsHandler,
   agentRunsTotal,
@@ -1084,16 +1085,5 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     await startWalletBalanceScheduler();
   });
 
-  process.on("SIGTERM", () => {
-    logger.info("SIGTERM received. Draining server...");
-    isDraining = true;
-    server.close(() => {
-      logger.info("Server closed. Exiting process.");
-      process.exit(0);
-    });
-    setTimeout(() => {
-      logger.error("Graceful shutdown timeout. Forcing exit.");
-      process.exit(1);
-    }, 30000);
-  });
+  gracefulShutdown({ server, onDrainStart: () => { isDraining = true; } });
 }
