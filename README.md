@@ -110,9 +110,11 @@ flowchart TD
 
 ## Quick links
 
+- [Getting started guide for caregivers](docs/guides/getting-started-caregiver.md)
 - [Quick start setup guide](QUICKSTART.md)
 - [Architecture overview](docs/ARCHITECTURE.md)
-- [Spending policy guide](docs/SPENDING-POLICY.md)
+- [Spending policy for caregivers](docs/guides/spending-policy-for-caregivers.md)
+- [Spending policy technical reference](docs/SPENDING-POLICY.md)
 - [Category budget examples](docs/guides/category-budgets-examples.md)
 - [Testnet explained for caregivers](docs/guides/testnet-explained.md)
 - [Using the /docs API explorer](docs/api-examples/using-the-docs-ui.md)
