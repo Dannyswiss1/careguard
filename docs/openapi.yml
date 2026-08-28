@@ -199,6 +199,7 @@ paths:
   /pharmacy/compare:
     get:
       summary: 'Compare pharmacy prices for a drug'
+      description: 'Returns pharmacy price comparison results for a given medication. See docs/api-examples/pharmacy-compare.md for a full curl example including the x402 payment flow.'
       tags:
         - 'Pharmacy'
       security:
