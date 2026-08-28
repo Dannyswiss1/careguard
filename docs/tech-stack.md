@@ -62,3 +62,29 @@ To upgrade TypeScript in the future: bump the exact version in both `package.jso
 | supertest | HTTP assertion helper |
 | ioredis-mock | Redis mock for unit tests |
 | Playwright | End-to-end tests (dashboard) |
+
+## Dependency version pairing
+
+Some dependencies must move together even though they are declared independently.
+`scripts/check-vitest-version-lock.mjs` (wired into CI) enforces the first rule.
+
+- **`vitest` ↔ `@vitest/coverage-v8` (issue #1395)** — `@vitest/coverage-v8` is
+  published against the exact `vitest` version it instruments. Both are declared
+  with identical `^` ranges and MUST be bumped together to the same release.
+  `npm run check:vitest-lock` fails CI if the declared specifiers or the
+  lockfile-resolved versions diverge.
+
+- **`ioredis` ↔ `ioredis-mock` (issue #1385)** — ioredis-mock's major version is
+  unrelated to ioredis's. This repo pairs `ioredis ^5` (dependencies) with
+  `ioredis-mock ^8` (devDependencies); ioredis-mock 8.x declares `ioredis ^5` as
+  a peer dependency and tracks the ioredis 5.x command surface. Commands used
+  (`GET`, `SET` incl. `PX`/`NX`, `INCR`, `DEL`) are covered by the mock — see
+  `shared/__tests__/redis-ioredis-mock.test.ts`. When bumping ioredis to a new
+  major, move ioredis-mock to the 8.x line that tracks that major.
+
+- **`proper-lockfile` (issue #1386)** — we intentionally stay on `^4.1.2`.
+  `4.1.2` is the latest published release (Jun 2022) with no newer major; the
+  package is a stable cooperative file-lock primitive with no known
+  vulnerabilities. A Redis-based lock cannot replace it because the file locks
+  (audit log, orders JSON, wallet migration) must work when `REDIS_URL` is unset.
+  Do not migrate to a Redis lock without adding a filesystem fallback.
