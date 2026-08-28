@@ -747,7 +747,7 @@ export const SpendingPolicySchema = z
       .object({
         email: z.boolean(),
         sms: z.boolean(),
-        emailAddress: z.string().email().optional(),
+        emailAddress: z.email().optional(),
         phoneNumber: z.string().optional(),
       })
       .optional(),
