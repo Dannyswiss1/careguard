@@ -127,6 +127,28 @@ policy), label-cardinality rules, and includes a checklist for new metrics.
 Every new metric must also be added to
 [`docs/observability/metrics-catalog.md`](docs/observability/metrics-catalog.md).
 
+## Local Lock Troubleshooting
+
+CareGuard uses `proper-lockfile` around local JSON state writes in `server.ts`,
+`shared/audit-log.ts`, and `services/pharmacy-payment/server.ts`. Those locks
+prevent concurrent requests from corrupting data under `data/`, but a killed
+dev server can leave a stale `*.lock` directory behind.
+
+If local requests hang or fail with lock-acquisition errors, inspect stale locks:
+
+```bash
+npm run clear:stale-locks
+```
+
+After confirming the listed paths belong to your local checkout, remove them:
+
+```bash
+npm run clear:stale-locks -- --yes
+```
+
+Use `--root=<path>` for a different data directory and
+`--older-than-minutes=<n>` to adjust the stale-lock threshold.
+
 ## Smart Contract Guidelines (Stellar/Soroban)
 
 If contributing to on-chain components:
