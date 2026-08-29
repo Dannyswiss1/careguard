@@ -6,6 +6,7 @@ import { copyText } from "../../lib/clipboard";
 import type { RecipientProfile } from "../../lib/types";
 import { ConfirmDialog } from "../primitives/confirm-dialog";
 import { TxLink } from "../primitives/tx-link";
+import { formatTime, getTranslations, type Locale } from "../../i18n";
 import type {
   AgentLogEntry,
   PaginationData,
@@ -18,7 +19,14 @@ export interface ActivityTabProps {
   recipient: RecipientProfile;
   agentLog: AgentLogEntry[];
   setAgentLog: (entries: AgentLogEntry[]) => void;
+  /**
+   * Transactions for the page currently in view — NOT the full history, despite
+   * the name (useAgentState replaces this array on every page change). Use
+   * fetchAllTransactions when the complete history is needed.
+   */
   allTransactions: Transaction[];
+  /** Fetches the complete transaction history on demand, for the PDF export. */
+  fetchAllTransactions?: () => Promise<Transaction[]>;
   auditEvents?: AuditLogEvent[];
   pagination: PaginationData | null;
   currentPage: number;
@@ -29,6 +37,7 @@ export interface ActivityTabProps {
   onResetAgent: () => void;
   loadingTransactions?: boolean;
   loadingSpending?: boolean;
+  locale?: Locale;
 }
 
 export function ActivityTab({
@@ -36,6 +45,7 @@ export function ActivityTab({
   agentLog,
   setAgentLog,
   allTransactions,
+  fetchAllTransactions,
   auditEvents = [],
   pagination,
   currentPage,
@@ -44,9 +54,45 @@ export function ActivityTab({
   setPageSize,
   spending,
   onResetAgent,
+  locale = "en",
 }: ActivityTabProps) {
   const [showAllLogEntries, setShowAllLogEntries] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [preparingReport, setPreparingReport] = useState(false);
+  const t = getTranslations(locale).activity;
+
+  // Reset clears the whole history, so count from pagination when it is known
+  // rather than from the page in view.
+  const totalTransactions = pagination?.total ?? allTransactions.length;
+
+  // The visible page is only part of the history once pagination kicks in, so
+  // "Download Report" pulls every page before building the PDF. When everything
+  // already fits on one page (the common case) no extra request is made.
+  const handleDownloadReport = async () => {
+    const hasUnloadedPages =
+      Boolean(fetchAllTransactions) &&
+      pagination !== null &&
+      pagination.total > allTransactions.length;
+
+    if (!hasUnloadedPages) {
+      downloadTransactionPDF(allTransactions, spending, { recipient });
+      return;
+    }
+
+    setPreparingReport(true);
+    try {
+      const full = await fetchAllTransactions!();
+      downloadTransactionPDF(full.length > 0 ? full : allTransactions, spending, {
+        recipient,
+      });
+    } catch {
+      // Fall back to the visible page rather than leaving the caregiver with
+      // no report at all.
+      downloadTransactionPDF(allTransactions, spending, { recipient });
+    } finally {
+      setPreparingReport(false);
+    }
+  };
 
   // allTransactions arrives pre-sorted newest-first from fetchTransactions (#220).
   // useMemo ensures the merge only reruns when transactions or audit events change,
@@ -91,9 +137,8 @@ export function ActivityTab({
       <ConfirmDialog
         open={confirmOpen}
         title="Reset all agent data?"
-        description={`This will delete ${allTransactions.length} transaction${
-          allTransactions.length === 1 ? "" : "s"
-        }, the agent log, and all audit results. This cannot be undone.`}
+        description={`This will delete ${totalTransactions} transaction${totalTransactions === 1 ? "" : "s"
+          }, the agent log, and all audit results. This cannot be undone.`}
         confirmLabel="Delete everything"
         cancelLabel="Cancel"
         destructive
@@ -104,16 +149,16 @@ export function ActivityTab({
         }}
       />
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-slate-700">Transaction Log</h2>
+        <h2 className="text-sm font-semibold text-slate-700">{t.title}</h2>
         <div className="flex items-center gap-3">
           {allTransactions.length > 0 && (
             <button
-              onClick={() =>
-                downloadTransactionPDF(allTransactions, spending, { recipient })
-              }
-              className="px-3 py-1.5 bg-sky-50 text-sky-700 rounded-lg text-xs font-medium hover:bg-sky-100 active:bg-sky-200 cursor-pointer transition-all"
+              onClick={handleDownloadReport}
+              disabled={preparingReport}
+              aria-busy={preparingReport}
+              className="px-3 py-1.5 bg-sky-50 text-sky-700 rounded-lg text-xs font-medium hover:bg-sky-100 active:bg-sky-200 cursor-pointer transition-all disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              Download Report
+              {preparingReport ? t.preparingReport : t.downloadReport}
             </button>
           )}
           <button
@@ -126,7 +171,7 @@ export function ActivityTab({
             onClick={() => setConfirmOpen(true)}
             className="text-xs text-red-500 hover:text-red-700 hover:underline active:text-red-800 cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-red-500 rounded px-1"
           >
-            Reset All
+            {t.reset}
           </button>
         </div>
       </div>
@@ -136,7 +181,7 @@ export function ActivityTab({
       >
         <div aria-hidden="true">
           {agentLog.length === 0 ? (
-            <span className="text-slate-500">No agent activity yet...</span>
+            <span className="text-slate-500">{t.noActivity}</span>
           ) : (
             <>
               {!showAllLogEntries && agentLog.length > 50 && (
@@ -208,7 +253,7 @@ export function ActivityTab({
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
         {mergedTimeline.length === 0 && !pagination ? (
           <div className="p-8 text-center text-sm text-slate-400">
-            No activity yet
+            {t.noTransactions}
           </div>
         ) : (
           <>
@@ -268,22 +313,22 @@ export function ActivityTab({
                 <thead className="bg-slate-50 border-b border-slate-200">
                   <tr>
                     <th className="hidden md:table-cell text-left px-4 py-2 text-xs font-medium text-slate-500">
-                      Time
+                      {t.time}
                     </th>
                     <th className="text-left px-4 py-2 text-xs font-medium text-slate-500">
-                      Type
+                      {t.type}
                     </th>
                     <th className="text-left px-4 py-2 text-xs font-medium text-slate-500">
-                      Description
+                      {t.description}
                     </th>
                     <th className="text-right px-4 py-2 text-xs font-medium text-slate-500">
-                      Amount
+                      {t.amount}
                     </th>
                     <th className="text-right px-4 py-2 text-xs font-medium text-slate-500">
-                      Status
+                      {t.status}
                     </th>
                     <th className="text-right px-4 py-2 text-xs font-medium text-slate-500">
-                      Stellar Tx
+                      {t.stellarTx}
                     </th>
                   </tr>
                 </thead>
@@ -294,7 +339,7 @@ export function ActivityTab({
                       return (
                         <tr key={item.id} className="border-b border-slate-100 last:border-0 bg-slate-50/50">
                           <td className="hidden md:table-cell px-4 py-2 text-xs text-slate-400">
-                            {new Date(au.timestamp).toLocaleTimeString()}
+                            {formatTime(new Date(au.timestamp), locale)}
                           </td>
                           <td className="px-4 py-2">
                             <span className="px-2 py-0.5 rounded text-xs font-medium bg-slate-800 text-slate-200">
@@ -318,17 +363,16 @@ export function ActivityTab({
                         className="border-b border-slate-100 last:border-0"
                       >
                         <td className="hidden md:table-cell px-4 py-2 text-xs text-slate-400">
-                          {new Date(tx.timestamp).toLocaleTimeString()}
+                          {formatTime(new Date(tx.timestamp), locale)}
                         </td>
                         <td className="px-4 py-2">
                           <span
-                            className={`px-2 py-0.5 rounded text-xs font-medium ${
-                              tx.type === "medication"
-                                ? "bg-blue-100 text-blue-700"
-                                : tx.type === "bill"
-                                  ? "bg-purple-100 text-purple-700"
-                                  : "bg-slate-100 text-slate-600"
-                            }`}
+                            className={`px-2 py-0.5 rounded text-xs font-medium ${tx.type === "medication"
+                              ? "bg-blue-100 text-blue-700"
+                              : tx.type === "bill"
+                                ? "bg-purple-100 text-purple-700"
+                                : "bg-slate-100 text-slate-600"
+                              }`}
                           >
                             {tx.type}
                           </span>
@@ -342,13 +386,12 @@ export function ActivityTab({
                         </td>
                         <td className="px-4 py-2 text-right">
                           <span
-                            className={`px-2 py-0.5 rounded text-xs ${
-                              tx.status === "completed"
-                                ? "bg-green-100 text-green-700"
-                                : tx.status === "blocked"
-                                  ? "bg-red-100 text-red-700"
-                                  : "bg-amber-100 text-amber-700"
-                            }`}
+                            className={`px-2 py-0.5 rounded text-xs ${tx.status === "completed"
+                              ? "bg-green-100 text-green-700"
+                              : tx.status === "blocked"
+                                ? "bg-red-100 text-red-700"
+                                : "bg-amber-100 text-amber-700"
+                              }`}
                           >
                             {tx.status}
                           </span>

@@ -33,6 +33,14 @@ describe('Transaction Pagination', () => {
     expect(response.body.transactions.length).toBeLessThanOrEqual(10);
   });
 
+  it('should return zero transactions for an explicit limit=0 (issue #1073)', async () => {
+    const response = await auth(request(app).get('/agent/transactions?limit=0'))
+      .expect(200);
+
+    expect(response.body.pagination.limit).toBe(0);
+    expect(response.body.transactions).toEqual([]);
+  });
+
   it('should respect offset parameter', async () => {
     const response = await auth(request(app).get('/agent/transactions?limit=5&offset=10'))
       .expect(200);

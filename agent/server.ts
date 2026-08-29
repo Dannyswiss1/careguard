@@ -11,7 +11,6 @@
 import "dotenv/config";
 import { createHash } from "crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "fs";
-import { existsSync, mkdirSync } from "fs";
 import express, { type Express } from "express";
 import OpenAI from "openai";
 import { Keypair, Horizon } from "@stellar/stellar-sdk";
@@ -22,13 +21,13 @@ import { validateTask, getSuspiciousTaskCount } from "../shared/task-validation.
 import { appendAuditEntry, auditRouter } from "../shared/audit-log.ts";
 import { rateLimiters } from "../shared/rate-limit.ts";
 import { agentQueue } from "../shared/agent-queue.ts";
-import { requestContextMiddleware } from "../shared/request-context.ts";
-import { requestLoggerMiddleware } from "../shared/request-logger.ts";
+import { requestLifecycleMiddleware } from "../shared/request-lifecycle.ts";
+import { gracefulShutdown } from "../shared/graceful-shutdown.ts";
 import {
   metricsHandler,
   agentRunsTotal,
 } from "../shared/metrics.ts";
-import { redactPII, hashTask } from "../shared/redact.ts";
+import { redactPII, hashTask, registerKnownNames } from "../shared/redact.ts";
 import {
   getSpendingSummary,
   getWalletBalance,
@@ -51,8 +50,9 @@ import { resolveStellarNetwork, validateSignerKeyForNetwork } from "../shared/st
 import { verifyWebhook } from "../shared/verify-webhook.ts";
 import { executeTool, runAgent, buildSystemPrompt } from "./runner.ts";
 import { requireApiKey } from "../shared/auth.ts";
+import { fetchWalletBalances } from "../shared/wallet-balance.ts";
 
-const PORT = parseInt(process.env.AGENT_PORT || "3004");
+const PORT = parseInt(process.env.AGENT_PORT || "3004", 10);
 
 if (!process.env.LLM_API_KEY) throw new Error("LLM_API_KEY required in .env");
 if (!process.env.AGENT_SECRET_KEY) throw new Error("AGENT_SECRET_KEY required in .env");
@@ -176,9 +176,8 @@ app.use(rateLimiters.default);
 
 applySecurityMiddleware(app);
 app.use(createCorsMiddleware());
-app.use(express.json({ limit: process.env.JSON_BODY_LIMIT ?? "64kb" }));
-app.use(requestContextMiddleware());
-app.use(requestLoggerMiddleware());
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT ?? "20kb" }));
+app.use(requestLifecycleMiddleware());
 app.get("/metrics", metricsHandler());
 
 // Per-run tool call cap
@@ -229,12 +228,10 @@ app.get("/agent/wallet", async (req, res) => {
     return res.json(cached.data);
   }
   try {
-    const account = await horizonServer.loadAccount(address);
-    const usdc = account.balances.find((b: any) => b.asset_code === "USDC" && b.asset_issuer === process.env.USDC_ISSUER);
-    const xlm = account.balances.find((b: any) => b.asset_type === "native");
+    const balances = await fetchWalletBalances(address, STELLAR_CONFIG.horizonUrl, process.env.USDC_ISSUER || "");
     const data = {
-      usdc: usdc ? parseFloat((usdc as any).balance).toFixed(2) : "0.00",
-      xlm: xlm ? parseFloat((xlm as any).balance).toFixed(2) : "0.00",
+      usdc: balances.usdc.toFixed(2),
+      xlm: balances.xlm.toFixed(2),
       address,
     };
     walletCache.set(address, { data, expiresAt: now + WALLET_CACHE_TTL_MS });
@@ -309,7 +306,7 @@ app.get("/", (_req, res) => {
   res.json({
     service: "CareGuard AI Agent",
     version: "1.0.0",
-    network: "stellar:testnet",
+    network: `stellar:${STELLAR_CONFIG.networkType}`,
     llm: `${LLM_BASE_URL} / ${LLM_MODEL}`,
     agentWallet: agentKeypair.publicKey(),
     recipients: ["rosa"],
@@ -494,6 +491,8 @@ let recipientProfiles: Record<string, RecipientProfile> = {};
 for (const [id, profile] of Object.entries(DEFAULT_RECIPIENTS)) {
   recipientProfiles[id] = { ...profile, medications: [...profile.medications] };
 }
+registerKnownNames([caregiverProfile.name]);
+registerKnownNames(Object.values(recipientProfiles).map((p) => p.name));
 
 app.get("/agent/recipients", (_req, res) => {
   res.json({ recipients: Object.keys(recipientProfiles), profiles: recipientProfiles });
@@ -505,7 +504,10 @@ app.put("/agent/recipients/:recipientId", (req, res) => {
   if (!recipientProfiles[recipientId]) {
     recipientProfiles[recipientId] = { ...DEFAULT_RECIPIENTS.rosa, name: recipientId, medications: [] };
   }
-  if (name) recipientProfiles[recipientId].name = name;
+  if (name) {
+    recipientProfiles[recipientId].name = name;
+    registerKnownNames([name]);
+  }
   if (typeof age === "number") recipientProfiles[recipientId].age = age;
   if (Array.isArray(medications)) recipientProfiles[recipientId].medications = medications;
   if (doctor) recipientProfiles[recipientId].doctor = doctor;
@@ -529,12 +531,18 @@ app.patch("/agent/profile", (req, res) => {
       recipientProfiles[recipientId] = { ...DEFAULT_RECIPIENTS.rosa, name: recipientId, medications: [] };
     }
     recipientProfiles[recipientId] = { ...recipientProfiles[recipientId], ...recipient };
+    if (recipient.name) {
+      registerKnownNames([recipient.name]);
+    }
     if (Array.isArray(recipient.medications)) {
       recipientProfiles[recipientId].medications = recipient.medications;
     }
   }
   if (caregiver && typeof caregiver === "object") {
     Object.assign(caregiverProfile, caregiver);
+    if (caregiver.name) {
+      registerKnownNames([caregiver.name]);
+    }
   }
   res.json({ recipient: recipientProfiles[recipientId], caregiver: caregiverProfile });
 });
@@ -582,15 +590,27 @@ app.post("/agent/dispute-letter", (req, res) => {
 // Startup: verify agent wallet has USDC balance
 async function verifyWallet() {
   try {
-    const account = await horizonServer.loadAccount(agentKeypair.publicKey());
-    const usdcBalance = account.balances.find((b: any) => b.asset_code === "USDC" && b.asset_issuer === process.env.USDC_ISSUER);
-    if (!usdcBalance) {
-      logger.error({ wallet: agentKeypair.publicKey() }, "agent wallet has no USDC trustline — fund at https://faucet.circle.com");
+    const balances = await fetchWalletBalances(
+      agentKeypair.publicKey(),
+      STELLAR_CONFIG.horizonUrl,
+      process.env.USDC_ISSUER || "",
+    );
+    if (!balances.hasUsdcTrustline) {
+      logger.error(
+        { wallet: agentKeypair.publicKey() },
+        "agent wallet has no USDC trustline — fund at https://faucet.circle.com",
+      );
       process.exit(1);
     }
-    logger.info({ usdc: usdcBalance.balance, xlm: account.balances.find((b: any) => b.asset_type === "native")?.balance || "0" }, "wallet balances");
+    logger.info(
+      { usdc: balances.usdc.toFixed(2), xlm: balances.xlm.toFixed(2) },
+      "wallet balances",
+    );
   } catch (err: any) {
-    logger.error({ err: err.message, wallet: agentKeypair.publicKey() }, "failed to load agent wallet");
+    logger.error(
+      { err: err.message, wallet: agentKeypair.publicKey() },
+      "failed to load agent wallet",
+    );
     process.exit(1);
   }
 }
@@ -647,15 +667,4 @@ const server = app.listen(PORT, async () => {
   await verifyWallet();
 });
 
-process.on("SIGTERM", () => {
-  logger.info("SIGTERM received. Draining server...");
-  isDraining = true;
-  server.close(() => {
-    logger.info("Server closed. Exiting process.");
-    process.exit(0);
-  });
-  setTimeout(() => {
-    logger.error("Graceful shutdown timeout. Forcing exit.");
-    process.exit(1);
-  }, 30000);
-});
+gracefulShutdown({ server, onDrainStart: () => { isDraining = true; } });

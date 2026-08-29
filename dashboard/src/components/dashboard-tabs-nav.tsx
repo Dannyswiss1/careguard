@@ -3,14 +3,17 @@
 import Link from "next/link";
 import { useState } from "react";
 import { DASHBOARD_TABS, type Tab } from "./types";
+import { getTranslations, type Locale } from "../i18n";
 
 export interface DashboardTabsNavProps {
   activeTab: Tab;
   pathname: string;
+  locale?: Locale;
 }
 
-export function DashboardTabsNav({ activeTab, pathname }: DashboardTabsNavProps) {
+export function DashboardTabsNav({ activeTab, pathname, locale = "en" }: DashboardTabsNavProps) {
   const [focusedTab, setFocusedTab] = useState<Tab>(activeTab);
+  const t = getTranslations(locale);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     const currentIndex = DASHBOARD_TABS.indexOf(focusedTab);
@@ -60,6 +63,10 @@ export function DashboardTabsNav({ activeTab, pathname }: DashboardTabsNavProps)
         const isActive = activeTab === tab;
         const href = tab === "overview" ? pathname : `${pathname}?tab=${tab}`;
         return (
+          // Issue #1124: We use next/link for bookmarkable URLs despite role="tab"
+          // and a roving tabIndex. Screen readers' "browse by link" may bypass the 
+          // tabIndex=-1, but activating the link will correctly navigate, making it
+          // an acceptable trade-off for shareable URLs.
           <Link
             key={tab}
             href={href}
@@ -71,7 +78,7 @@ export function DashboardTabsNav({ activeTab, pathname }: DashboardTabsNavProps)
             onFocus={() => setFocusedTab(tab)}
             className={`px-4 py-2 rounded-md text-sm font-medium transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 ${isActive ? "bg-sky-500 text-white" : "text-slate-600 hover:bg-slate-100 active:bg-slate-200"}`}
           >
-            {tab.charAt(0).toUpperCase() + tab.slice(1)}
+            {t.tabs[tab]}
           </Link>
         );
       })}
