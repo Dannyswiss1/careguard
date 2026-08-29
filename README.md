@@ -167,6 +167,8 @@ Boot time on a warm Docker is ~30s (cold first build is much longer due to npm i
 
 See [docs/observability/health-checks.md](docs/observability/health-checks.md) for the `/health` and `/ready` response schemas and what each dependency check means.
 
+For local Grafana — which dashboards are pre-provisioned, which `prom-client` metric each panel shows, and how to add a dashboard/panel without committing experimental JSON — see [docs/LOCAL-MONITORING.md](docs/LOCAL-MONITORING.md).
+
 ---
 
 ## API Documentation
