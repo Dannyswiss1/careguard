@@ -142,6 +142,7 @@ interface OpenAPISpec {
       };
     };
     schemas: Record<string, Record<string, unknown>>;
+    responses?: Record<string, Record<string, unknown>>;
   };
   paths: Record<string, OpenAPIPath>;
 }
@@ -180,35 +181,42 @@ export function generateSpec(): OpenAPISpec {
     ],
     security: [
       {
-        X402Auth: [],
+        CaregiverBearerAuth: [],
       },
     ],
     components: {
       securitySchemes: {
-        X402Auth: {
+        CaregiverBearerAuth: {
           type: "http",
           scheme: "bearer",
+          bearerFormat: "token",
           description:
-            "x402 payment protocol. Include X-PAYMENT header with payment proof on protected routes.",
+            "Bearer token used to authorize caregiver access to /agent/* endpoints. Set CAREGIVER_TOKEN in environment variables.",
+        },
+        X402Auth: {
+          type: "apiKey",
+          name: "X-Payment",
+          in: "header",
+          description: "x402 payment proof header for paid endpoints on Stellar.",
         },
       },
       schemas: {
         Error: {
           type: "object",
-          description:
-            "Standard error envelope for 4xx/5xx responses. See docs/error-codes.md for the full registry of `code` values, their meaning, and remediation.",
+          required: ["error", "code"],
           properties: {
             error: {
               type: "string",
-              description: "Human-readable message — do NOT branch on this value.",
+              description: "A human-readable description of the error.",
             },
             code: {
               type: "string",
-              enum: [...ERROR_CODES],
-              description:
-                "Stable machine-readable error code. See docs/error-codes.md for the full registry.",
+              description: "A stable, machine-readable uppercase SNAKE_CASE code identifying the specific type of error.",
             },
-            details: { type: "object" },
+            details: {
+              type: "object",
+              description: "Structured metadata or field-level details specific to the error code.",
+            },
           },
           required: ["error", "code"],
         },
@@ -244,6 +252,64 @@ export function generateSpec(): OpenAPISpec {
                 horizon: { type: "boolean" },
                 ozFacilitator: { oneOf: [{ type: "boolean" }, { type: "string" }] },
               },
+            },
+          },
+        },
+      },
+      responses: {
+        BadRequestError: {
+          description: "Bad Request / Validation Error",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/Error" },
+            },
+          },
+        },
+        UnauthorizedError: {
+          description: "Missing or invalid authentication credentials",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/Error" },
+            },
+          },
+        },
+        ForbiddenError: {
+          description: "Forbidden access (e.g., CSRF token mismatch, invalid admin credentials)",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/Error" },
+            },
+          },
+        },
+        NotFoundError: {
+          description: "Requested resource not found",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/Error" },
+            },
+          },
+        },
+        PaymentRequiredError: {
+          description: "Payment required (x402 / MPP Challenge)",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/Error" },
+            },
+          },
+        },
+        ConflictError: {
+          description: "Conflict / State violation (e.g., Agent is paused)",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/Error" },
+            },
+          },
+        },
+        InternalServerError: {
+          description: "Internal server error",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/Error" },
             },
           },
         },
@@ -316,6 +382,8 @@ export function generateSpec(): OpenAPISpec {
                 },
               },
             },
+            "401": errorResponse("Missing or invalid CAREGIVER_TOKEN."),
+            "403": errorResponse("Caregiver token invalid or insufficient access."),
             "429": RATE_LIMIT_RESPONSE,
             "500": SERVER_ERROR_RESPONSE,
           },
@@ -377,6 +445,8 @@ export function generateSpec(): OpenAPISpec {
       "/pharmacy/prices": {
         post: {
           summary: "Admin upsert for a drug price at a pharmacy",
+          description:
+            "Admin-only endpoint to create or update a drug price at a pharmacy. See docs/api-examples/pharmacy-prices-admin.md for detailed authorization rules, sample payloads, and effects on future comparison results.",
           tags: ["Pharmacy"],
           requestBody: {
             required: true,
@@ -466,19 +536,6 @@ export function generateSpec(): OpenAPISpec {
           responses: {
             "200": {
               description: "Audit results",
-            },
-            "400": {
-              description: "Validation error. `code` is one of VALIDATION_MISSING_FIELD, VALIDATION_INVALID_INPUT.",
-              content: {
-                "application/json": {
-                  schema: {
-                    type: "object",
-                    properties: {
-                      errors: { type: "array" },
-                    },
-                  },
-                },
-              },
             },
             "402": paymentRequiredResponse(),
             "413": bodyTooLargeResponse(),

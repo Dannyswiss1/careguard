@@ -75,7 +75,10 @@ export function BillLineItemsVirtualized({ lineItems }: BillLineItemsVirtualized
       <div className="overflow-x-auto rounded-lg shadow-[inset_-10px_0_12px_-12px_rgba(15,23,42,0.25)]">
         <div className="space-y-2 min-w-[640px]">
           {lineItems.map((item, j) => (
-            <ItemRow key={j} item={item} />
+            <ItemRow
+              key={`${item.description}-${item.cptCode ?? "na"}-${j}`}
+              item={item}
+            />
           ))}
         </div>
       </div>
@@ -101,9 +104,10 @@ export function BillLineItemsVirtualized({ lineItems }: BillLineItemsVirtualized
         >
           {virtualizer.getVirtualItems().map((virtualItem) => {
             const item = lineItems[virtualItem.index];
+            const stableKey = `${item.description}:${item.cptCode ?? ""}:${item.chargedAmount}`;
             return (
               <div
-                key={virtualItem.index}
+                key={stableKey}
                 style={{
                   position: "absolute",
                   top: 0,
