@@ -60,6 +60,23 @@ Related packages are batched into a single PR to reduce noise:
 - `next` + `react` + `react-dom` — Next.js core (dashboard)
 - `tailwindcss` + `@tailwindcss/*` — Tailwind (dashboard)
 
+### Workspace pin alignment (enforced)
+
+To prevent silent drift between the root and `dashboard/` workspaces, the following
+pins are intentionally aligned and checked in CI/lint:
+
+| Package | Root | Dashboard | Strategy | Rationale |
+|---------|------|-----------|----------|-----------|
+| `@types/node` | `^25.6.0` | `^25.6.0` | **Exact caret major aligned** — both `^25.6.0` | `engines.node >=22` requires Node 22+ globals/APIs. Node 20 types (`^20`) omit `fetch`/`ReadableStream`/`URLPattern` refinements and other lib updates, causing incorrect type-checking for dashboard server code and API routes. Majors are intentionally aligned on `25` (latest compatible with `>=22`). Any Node 20-specific type workarounds must be removed; `tsc --noEmit` is run on both workspaces in CI. |
+| `tailwindcss` | `^4.3.1` | `^4.3.1` | **Pinned minor `^4.3.1`** | `^4` allowed dashboard to resolve `4.2.x` while root used `4.3.1`, silently diverging utility-class behavior between builds. Pinning both to `^4.3.1` guarantees reproducible builds and identical utility output. Verify with `npm ls tailwindcss` and diff Tailwind build output before/after bumps. |
+| `@tailwindcss/postcss` | `^4.3.1` | `^4.3.1` | **Pinned minor `^4.3.1`** | Same rationale as `tailwindcss` — the PostCSS plugin must match the Tailwind minor to avoid untested 4.x combinations. Lockfiles are regenerated so both workspaces resolve identical versions. |
+| `react` / `react-dom` | `^19.2.5` | `^19.2.5` | **Caret `^19.2.5` on both** | Mixed strategies (root `^19.2.5` vs dashboard exact `19.2.5`) risk silent drift and duplicate React copies, which breaks hooks/context. The project standardizes on **caret** to allow Dependabot patch/minor auto-merges while keeping the range identical. Verify with `npm ls react` (and `npm ls react-dom`) — must show a single deduped version. Exact pinning was considered but rejected because it blocks automated security patches. |
+
+**Preventing future drift:**
+- `npm ls react`, `npm ls tailwindcss`, and `npm ls @tailwindcss/postcss` must show single resolved versions; add to CI if not present.
+- Dependabot groups (`next`+`react`+`react-dom` and `tailwindcss`+`@tailwindcss/*`) are kept in sync — do not update one workspace without the other.
+- A manual lint check: `node -p "require('./package.json').devDependencies.react === require('./dashboard/package.json').dependencies.react"` should be truthy for the shared packages above.
+
 ### Major version bumps
 
 Major bumps are **not** auto-merged. Dependabot will open a PR labeled `major-update` + `needs-review`. A maintainer must:
