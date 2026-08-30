@@ -145,6 +145,27 @@ policy), label-cardinality rules, and includes a checklist for new metrics.
 Every new metric must also be added to
 [`docs/observability/metrics-catalog.md`](docs/observability/metrics-catalog.md).
 
+## Local Lock Troubleshooting
+
+CareGuard uses `proper-lockfile` around local JSON state writes in `server.ts`,
+`shared/audit-log.ts`, and `services/pharmacy-payment/server.ts`. Those locks
+prevent concurrent requests from corrupting data under `data/`, but a killed
+dev server can leave a stale `*.lock` directory behind.
+
+If local requests hang or fail with lock-acquisition errors, inspect stale locks:
+
+```bash
+npm run clear:stale-locks
+```
+
+After confirming the listed paths belong to your local checkout, remove them:
+
+```bash
+npm run clear:stale-locks -- --yes
+```
+
+Use `--root=<path>` for a different data directory and
+`--older-than-minutes=<n>` to adjust the stale-lock threshold.
 ## Troubleshooting
 
 > **First step for any setup or runtime failure:** run `npm run check:env-vars` (which executes `scripts/check-env-vars.ts:65`) to validate that every key in `.env.example` is actually referenced in the codebase and to flag unused or missing vars. Its output (`⚠️  unused variables` / `✅ All environment variables ...`) often points directly at the missing `OZ_FACILITATOR_API_KEY` or `LLM_API_KEY`. See `scripts/check-env-vars.ts:14` for how it parses `.env.example`.
